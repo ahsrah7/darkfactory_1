@@ -1,0 +1,15 @@
+// Prisma schema for the Todo app.
+//
+// PR-1 (SCRUM-7) has no models. The Todo model and the first migration are added
+// in PR-2. The datasource URL is not set here. It comes from DATABASE_URL in
+// prisma.config.ts.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../apps/api/src/generated/prisma"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}

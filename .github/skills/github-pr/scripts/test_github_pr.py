@@ -838,12 +838,85 @@ class ReviewAutoMergeGuardTests(unittest.TestCase):
     def test_base_branch_name_with_slash_keeps_slash_in_path(self):
         with mock.patch.object(review_pr, "request", return_value={}) as request:
             review_pr.base_requires_status("o", "r", "release/1.0")
-        self.assertEqual(request.call_args[0][1], "/repos/o/r/branches/release/1.0/protection")
+        paths = [call[0][1] for call in request.call_args_list]
+        self.assertEqual(paths, ["/repos/o/r/branches/release/1.0/protection", "/repos/o/r/rules/branches/release/1.0"])
 
     def test_base_branch_name_with_query_and_fragment_chars_is_percent_encoded(self):
         with mock.patch.object(review_pr, "request", return_value={}) as request:
             review_pr.base_requires_status("o", "r", "feat?x#y")
-        self.assertEqual(request.call_args[0][1], "/repos/o/r/branches/feat%3Fx%23y/protection")
+        paths = [call[0][1] for call in request.call_args_list]
+        self.assertEqual(paths, ["/repos/o/r/branches/feat%3Fx%23y/protection", "/repos/o/r/rules/branches/feat%3Fx%23y"])
+
+
+def _ruleset_rule(context, rule_type="required_status_checks"):
+    return {"type": rule_type, "parameters": {"required_status_checks": [{"context": context}]}}
+
+
+class RulesetGuardTests(unittest.TestCase):
+    def test_rules_with_required_factory_review_check_require_status(self):
+        rules = [{"type": "deletion"}, _ruleset_rule("test"), _ruleset_rule(review_pr.STATUS_CONTEXT)]
+        self.assertTrue(review_pr.rules_require_status(rules, review_pr.STATUS_CONTEXT))
+
+    def test_rules_without_required_factory_review_check_do_not_require_status(self):
+        rules = [_ruleset_rule("test")]
+        self.assertFalse(review_pr.rules_require_status(rules, review_pr.STATUS_CONTEXT))
+
+    def test_rule_of_another_type_with_same_context_does_not_require_status(self):
+        rules = [_ruleset_rule(review_pr.STATUS_CONTEXT, rule_type="pull_request")]
+        self.assertFalse(review_pr.rules_require_status(rules, review_pr.STATUS_CONTEXT))
+
+    def test_empty_rules_list_does_not_require_status(self):
+        self.assertFalse(review_pr.rules_require_status([], review_pr.STATUS_CONTEXT))
+
+    def test_similar_context_name_does_not_match(self):
+        rules = [_ruleset_rule("factory/reviewer"), _ruleset_rule("Factory/Review")]
+        self.assertFalse(review_pr.rules_require_status(rules, review_pr.STATUS_CONTEXT))
+
+    def test_missing_or_malformed_rules_do_not_require_status(self):
+        self.assertFalse(review_pr.rules_require_status(None, review_pr.STATUS_CONTEXT))
+        self.assertFalse(review_pr.rules_require_status({"type": "required_status_checks"}, review_pr.STATUS_CONTEXT))
+        malformed = [{"type": "required_status_checks", "parameters": {"required_status_checks": "factory/review"}},
+                     {"type": "required_status_checks"}, "factory/review"]
+        self.assertFalse(review_pr.rules_require_status(malformed, review_pr.STATUS_CONTEXT))
+
+    def _decide(self, protection=None, protection_404=False, rules=None, rules_404=False):
+        def fake_request(method, path, body=None):
+            if path.endswith("/protection"):
+                if protection_404:
+                    raise GhError("GET protection failed: HTTP 404 Branch not protected", status=404)
+                return protection
+            if rules_404:
+                raise GhError("GET rules failed: HTTP 404 Not Found", status=404)
+            return rules if rules is not None else []
+
+        with mock.patch.object(review_pr, "request", side_effect=fake_request):
+            return review_pr.base_requires_status("o", "r", "main")
+
+    def test_rulesets_with_factory_review_give_true(self):
+        self.assertTrue(self._decide(protection_404=True, rules=[_ruleset_rule(review_pr.STATUS_CONTEXT)]))
+
+    def test_classic_protection_only_gives_true(self):
+        self.assertTrue(self._decide(protection=REQUIRES_STATUS, rules=[]))
+
+    def test_neither_source_gives_false(self):
+        self.assertFalse(self._decide(protection=NO_STATUS, rules=[_ruleset_rule("test")]))
+        self.assertFalse(self._decide(protection_404=True, rules=[]))
+
+    def test_404_on_rules_endpoint_with_classic_present_gives_true(self):
+        self.assertTrue(self._decide(protection=REQUIRES_STATUS, rules_404=True))
+
+    def test_404_on_protection_with_rules_present_gives_true(self):
+        self.assertTrue(self._decide(protection_404=True, rules=[_ruleset_rule(review_pr.STATUS_CONTEXT)]))
+
+    def test_non_404_error_on_rules_endpoint_is_not_hidden(self):
+        def fake_request(method, path, body=None):
+            if path.endswith("/protection"):
+                return NO_STATUS
+            raise GhError("GET rules failed: HTTP 500 boom", status=500)
+
+        with mock.patch.object(review_pr, "request", side_effect=fake_request):
+            with self.assertRaises(GhError):
+                review_pr.base_requires_status("o", "r", "main")
 
     def test_enable_auto_merge_sends_squash_mutation_for_pr_node_id(self):
         def fake_graphql(query, variables=None):
@@ -894,7 +967,7 @@ class ReviewExecutionTests(unittest.TestCase):
             handle.write("Review body\n")
 
     def _run(self, decision, protection=None, protection_missing=False, comments=(), pr=PR_OPEN, extra=(),
-             auto_merge_request={"enabledAt": "t"}):
+             auto_merge_request={"enabledAt": "t"}, rules=(), rules_missing=False):
         calls = []
 
         def fake_request(method, path, body=None):
@@ -903,6 +976,10 @@ class ReviewExecutionTests(unittest.TestCase):
                 if protection_missing:
                     raise GhError("GET protection failed: HTTP 404 Branch not protected", status=404)
                 return protection
+            if method == "GET" and "/rules/branches/" in path:
+                if rules_missing:
+                    raise GhError("GET rules failed: HTTP 404 Not Found", status=404)
+                return list(rules)
             if method == "GET" and "/pulls/" in path:
                 return pr
             return {"id": 1}
@@ -1002,6 +1079,19 @@ class ReviewExecutionTests(unittest.TestCase):
         posts = self._posts(calls)
         self.assertEqual(posts[0][1]["state"], "success")
         self.assertEqual(posts[1][1]["body"].splitlines()[0], "<!-- factory-review:approve -->")
+
+    def test_approve_with_ruleset_factory_review_enables_automerge_without_classic_protection(self):
+        rules = [_ruleset_rule(review_pr.STATUS_CONTEXT)]
+        code, calls, out = self._run("approve", protection_missing=True, rules=rules)
+        self.assertEqual(code, 0)
+        self.assertIn("  automerge:enable", out)
+        self.assertEqual(len(self._graphql_calls(calls)), 2)
+
+    def test_approve_with_no_rules_and_no_protection_skips_automerge(self):
+        code, calls, out = self._run("approve", protection_missing=True, rules_missing=True)
+        self.assertEqual(code, 0)
+        self.assertIn("automerge:skipped-no-protection", out)
+        self.assertEqual(self._graphql_calls(calls), [])
 
     def test_approve_with_enabled_automerge_reports_enable_and_succeeds(self):
         code, _, out = self._run("approve", protection=REQUIRES_STATUS)

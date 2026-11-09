@@ -3,7 +3,8 @@
 Usage: review_pr.py --pr N --decision approve|request-changes --body-file FILE [--max-rework 3] [--dry-run]
 
 Posts the review comment, sets the factory/review commit status and, on approval,
-enables squash auto-merge only when the base branch protection requires factory/review.
+enables squash auto-merge only when the base branch requires factory/review. The requirement is
+read from both classic branch protection and the effective rules of the base branch (rulesets).
 At or above the rework limit nothing is auto-merged: the decision escalates.
 Exit codes: 0 done or dry run; 1 GitHub error, or auto-merge was not enabled after an approval
 (reported as automerge:not-enabled); 2 refused input.
@@ -70,11 +71,31 @@ def plan_review(decision, prior_rework_rounds, base_requires_status, max_rework)
 
 
 def protection_requires_status(protection):
-    """True when branch protection lists STATUS_CONTEXT as a required check."""
+    """True when classic branch protection lists STATUS_CONTEXT as a required check."""
     checks = (protection or {}).get("required_status_checks") or {}
     contexts = list(checks.get("contexts") or [])
     contexts += [check.get("context") for check in checks.get("checks") or [] if isinstance(check, dict)]
     return STATUS_CONTEXT in contexts
+
+
+def rules_require_status(rules, context):
+    """True when an effective branch rule requires `context` as a status check. Pure: no I/O.
+
+    `rules` is the JSON list from GET /repos/{owner}/{repo}/rules/branches/{base}. Only rules of
+    type "required_status_checks" count; a missing or non-list value is not a requirement.
+    """
+    if not isinstance(rules, list):
+        return False
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+            continue
+        parameters = rule.get("parameters") or {}
+        checks = parameters.get("required_status_checks") if isinstance(parameters, dict) else None
+        if not isinstance(checks, list):
+            continue
+        if any(isinstance(check, dict) and check.get("context") == context for check in checks):
+            return True
+    return False
 
 
 def comment_kind(actions):
@@ -105,14 +126,22 @@ def build_comment(kind, body, prior_rework_rounds, max_rework):
     return f"{MARKERS[kind]}\n{body}"
 
 
-def base_requires_status(owner, name, base):
+def _read_or_none(path):
+    """GET path. A 404 means this source has nothing to say and returns None; other errors are raised."""
     try:
-        protection = request("GET", f"/repos/{owner}/{name}/branches/{quote(base, safe='/')}/protection")
+        return request("GET", path)
     except GhError as exc:
         if exc.status == 404:
-            return False
+            return None
         raise
-    return protection_requires_status(protection)
+
+
+def base_requires_status(owner, name, base):
+    """True when classic branch protection OR the effective rules of `base` require STATUS_CONTEXT."""
+    encoded = quote(base, safe="/")
+    protection = _read_or_none(f"/repos/{owner}/{name}/branches/{encoded}/protection")
+    rules = _read_or_none(f"/repos/{owner}/{name}/rules/branches/{encoded}")
+    return protection_requires_status(protection) or rules_require_status(rules, STATUS_CONTEXT)
 
 
 def enable_auto_merge(owner, name, number):

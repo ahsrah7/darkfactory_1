@@ -510,7 +510,56 @@ class TempRepoCase(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
 
-class PublishDryRunTests(TempRepoCase):
+class BareRemoteCase(TempRepoCase):
+    """The throwaway repository plus a bare remote named origin. Nothing is pushed unless a test pushes it."""
+
+    def setUp(self):
+        super().setUp()
+        remote = tempfile.TemporaryDirectory()
+        self.addCleanup(remote.cleanup)
+        self.remote_dir = remote.name
+        subprocess.run(["git", "init", "-q", "--bare", self.remote_dir], capture_output=True, check=True)
+        self.git("remote", "add", "origin", self.remote_dir)
+
+    def remote_refs(self):
+        """Every ref the bare remote holds, read from the remote itself."""
+        result = subprocess.run(
+            ["git", "--git-dir", self.remote_dir, "for-each-ref", "--format=%(refname)"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.split()
+
+    def remote_ref(self, name):
+        result = subprocess.run(
+            ["git", "--git-dir", self.remote_dir, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    def commit_locally(self):
+        self.write("products/x/c.txt", "local commit\n")
+        self.git("add", "products/x/c.txt")
+        self.git("commit", "-q", "-m", "local work")
+
+    def commit_outside_scope(self):
+        self.write("outside/d.txt", "outside scope\n")
+        self.git("add", "outside/d.txt")
+        self.git("commit", "-q", "-m", "outside work")
+
+
+class RemoteWithMainCase(BareRemoteCase):
+    """origin already holds the initial commit as main, so origin/main exists locally."""
+
+    def setUp(self):
+        super().setUp()
+        self.git("push", "-q", "origin", "work:refs/heads/main")
+
+
+class PublishDryRunTests(RemoteWithMainCase):
     def test_dry_run_changes_no_git_state(self):
         self.write("products/x/b.txt", "changed\n")
         self.write("products/x/new/c.txt", "new\n")
@@ -556,7 +605,7 @@ class PublishDryRunTests(TempRepoCase):
         self.assertEqual(self.snapshot(), before)
 
 
-class PublishOutOfScopeRenameTests(TempRepoCase):
+class PublishOutOfScopeRenameTests(RemoteWithMainCase):
     def test_staged_rename_out_of_scope_is_refused_with_exit_3(self):
         # Move a tracked file from outside the scope into it. Rename detection would hide the source.
         os.makedirs("products/x", exist_ok=True)
@@ -571,31 +620,8 @@ class PublishOutOfScopeRenameTests(TempRepoCase):
         self.assertEqual(self.git("diff", "--cached", "--name-only").strip(), "")
 
 
-class RemotePublishTests(TempRepoCase):
+class RemotePublishTests(RemoteWithMainCase):
     """Nothing staged: publish_branch must push local commits that origin does not have yet."""
-
-    def setUp(self):
-        super().setUp()
-        remote = tempfile.TemporaryDirectory()
-        self.addCleanup(remote.cleanup)
-        self.remote_dir = remote.name
-        subprocess.run(["git", "init", "-q", "--bare", self.remote_dir], capture_output=True, check=True)
-        self.git("remote", "add", "origin", self.remote_dir)
-        self.git("push", "-q", "origin", "work:refs/heads/main")
-
-    def remote_ref(self, name):
-        result = subprocess.run(
-            ["git", "--git-dir", self.remote_dir, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return result.stdout.strip() if result.returncode == 0 else None
-
-    def commit_locally(self):
-        self.write("products/x/c.txt", "local commit\n")
-        self.git("add", "products/x/c.txt")
-        self.git("commit", "-q", "-m", "local work")
 
     def test_nothing_staged_and_ahead_pushes_local_commits(self):
         self.commit_locally()
@@ -632,6 +658,159 @@ class RemotePublishTests(TempRepoCase):
         self.assertNotIn("nothing to publish", out)
         self.assertIsNone(self.remote_ref("work"))
         self.assertEqual(self.snapshot(), before)
+
+    def test_push_failure_output_does_not_print_the_remote_url(self):
+        self.commit_locally()
+        missing = self.remote_dir + "-gone"
+        self.git("remote", "set-url", "origin", missing)
+
+        code, _, err = self.run_publish(["--branch", "work", "--scope", "products/x", "--message", "m"])
+
+        self.assertEqual(code, publish_branch.EXIT_GIT)
+        self.assertIn("error: push failed", err)
+        self.assertNotIn(missing, err)
+        self.assertIn("origin", err)
+
+
+class UnpushedScopeTests(RemoteWithMainCase):
+    """Nothing staged, branch ahead of origin: every unpushed commit must sit inside the scopes before a push."""
+
+    def test_out_of_scope_unpushed_commit_is_refused_and_nothing_is_pushed(self):
+        self.commit_locally()
+        self.commit_outside_scope()
+        before = self.snapshot()
+
+        code, out, err = self.run_publish(["--branch", "work", "--scope", "products/x", "--message", "m"])
+
+        self.assertEqual(code, publish_branch.EXIT_OUTSIDE_SCOPE, err)
+        self.assertIn("outside/d.txt", err)
+        self.assertNotIn("pushed", out)
+        self.assertIsNone(self.remote_ref("work"))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_out_of_scope_unpushed_commit_dry_run_is_refused_and_nothing_is_pushed(self):
+        self.commit_outside_scope()
+        before = self.snapshot()
+
+        code, out, err = self.run_publish(
+            ["--branch", "work", "--scope", "products/x", "--message", "m", "--dry-run"]
+        )
+
+        self.assertEqual(code, publish_branch.EXIT_OUTSIDE_SCOPE, err)
+        self.assertIn("outside/d.txt", err)
+        self.assertNotIn("would push", out)
+        self.assertIsNone(self.remote_ref("work"))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_out_of_scope_file_added_then_removed_is_still_refused(self):
+        self.commit_outside_scope()
+        self.git("rm", "-q", "outside/d.txt")
+        self.git("commit", "-q", "-m", "remove again")
+        self.commit_locally()
+
+        code, _, err = self.run_publish(["--branch", "work", "--scope", "products/x", "--message", "m"])
+
+        self.assertEqual(code, publish_branch.EXIT_OUTSIDE_SCOPE, err)
+        self.assertIn("outside/d.txt", err)
+        self.assertIsNone(self.remote_ref("work"))
+
+    def test_staged_in_scope_change_with_out_of_scope_unpushed_commit_is_refused(self):
+        self.commit_outside_scope()
+        self.write("products/x/b.txt", "staged change\n")
+        self.git("add", "products/x/b.txt")
+        head = self.git("rev-parse", "HEAD").strip()
+
+        code, _, err = self.run_publish(["--branch", "work", "--scope", "products/x", "--message", "m"])
+
+        self.assertEqual(code, publish_branch.EXIT_OUTSIDE_SCOPE, err)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
+        self.assertIsNone(self.remote_ref("work"))
+        self.assertIn("products/x/b.txt", self.git("diff", "--cached", "--name-only"))
+
+    def test_no_scope_is_refused_with_exit_2_and_nothing_is_pushed(self):
+        self.commit_locally()
+        with self.assertRaises(SystemExit) as caught:
+            self.run_publish(["--branch", "work", "--message", "m"])
+        self.assertEqual(caught.exception.code, publish_branch.EXIT_REFUSED)
+        self.assertIsNone(self.remote_ref("work"))
+
+
+class NoRemoteBaseTests(BareRemoteCase):
+    """origin exists but holds no refs, so neither origin/work nor origin/main exists locally."""
+
+    def test_missing_base_with_unpushed_commit_exits_1_without_success_message(self):
+        self.commit_locally()
+        before = self.snapshot()
+
+        code, out, err = self.run_publish(["--branch", "work", "--scope", "products/x", "--message", "m"])
+
+        self.assertEqual(code, publish_branch.EXIT_GIT)
+        self.assertIn(publish_branch.NO_BASE_MESSAGE, err)
+        self.assertNotIn("pushed", out)
+        self.assertNotIn("nothing to publish", out)
+        self.assertEqual(self.remote_refs(), [])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_missing_base_with_nothing_local_still_exits_1_not_nothing_to_publish(self):
+        code, out, err = self.run_publish(["--branch", "work", "--scope", "products/x", "--message", "m"])
+
+        self.assertEqual(code, publish_branch.EXIT_GIT)
+        self.assertIn(publish_branch.NO_BASE_MESSAGE, err)
+        self.assertNotIn("nothing to publish", out)
+        self.assertEqual(self.remote_refs(), [])
+
+    def test_missing_base_dry_run_exits_1_and_changes_nothing(self):
+        self.commit_locally()
+        before = self.snapshot()
+
+        code, out, err = self.run_publish(
+            ["--branch", "work", "--scope", "products/x", "--message", "m", "--dry-run"]
+        )
+
+        self.assertEqual(code, publish_branch.EXIT_GIT)
+        self.assertIn(publish_branch.NO_BASE_MESSAGE, err)
+        self.assertNotIn("would push", out)
+        self.assertNotIn("nothing to publish", out)
+        self.assertEqual(self.remote_refs(), [])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_missing_base_dry_run_with_nothing_local_exits_1(self):
+        code, out, err = self.run_publish(
+            ["--branch", "work", "--scope", "products/x", "--message", "m", "--dry-run"]
+        )
+
+        self.assertEqual(code, publish_branch.EXIT_GIT)
+        self.assertIn(publish_branch.NO_BASE_MESSAGE, err)
+        self.assertNotIn("nothing to publish", out)
+
+    def test_missing_base_with_staged_path_leaves_index_and_head_alone(self):
+        self.write("products/x/c.txt", "staged\n")
+        self.git("add", "products/x/c.txt")
+        before = self.snapshot()
+
+        code, _, err = self.run_publish(["--branch", "work", "--scope", "products/x", "--message", "m"])
+
+        self.assertEqual(code, publish_branch.EXIT_GIT)
+        self.assertIn(publish_branch.NO_BASE_MESSAGE, err)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.remote_refs(), [])
+
+
+class RedactionTests(unittest.TestCase):
+    def test_redact_prints_origin_for_its_url_and_strips_credentials_from_others(self):
+        urls = ["https://user:secret@example.invalid/repo.git"]
+        text = (
+            "To https://user:secret@example.invalid/repo.git\n"
+            " ! [rejected] work -> work\n"
+            "fatal: see https://other:pw@example.org/x for details"
+        )
+
+        out = publish_branch._redact(text, urls)
+
+        self.assertIn("To origin", out)
+        self.assertNotIn("secret", out)
+        self.assertNotIn("pw@", out)
+        self.assertIn("https://example.org/x", out)
 
 
 class ReviewAutoMergeGuardTests(unittest.TestCase):

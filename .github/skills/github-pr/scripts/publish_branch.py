@@ -2,17 +2,32 @@
 
 Usage: publish_branch.py --branch NAME --scope PATH [--scope PATH ...] --message MSG [--dry-run]
 
-Exit codes: 0 published, dry run done, or nothing to publish; 1 git failed;
-2 refused input; 3 staged paths outside the scopes (nothing committed).
-With nothing staged, it still pushes local commits the remote does not have yet.
+Exit codes: 0 published, dry run done, or nothing to publish; 1 git failed or no
+remote base found; 2 refused input (including a missing --scope); 3 staged paths or
+unpushed commits outside the scopes (nothing committed, nothing pushed).
+
+Unpushed commits are every commit in base..BRANCH, where base is origin/NAME when
+that ref exists, else origin/main. If neither exists the unpushed state is unknown,
+so the script exits 1 with "no remote base found; fetch origin before publishing"
+and changes nothing. It never counts commits as published on a guess, and it never
+reports "nothing to publish" in that case.
+
+Every unpushed commit is checked against the scopes before anything is pushed.
+Each commit's changed paths are read one commit at a time with --no-renames, merges
+included. A commit that adds an out-of-scope file and a later commit that removes it
+are still refused. A push-when-ahead always has a scope, because --scope is required.
+
+With nothing staged, it still pushes local commits the remote does not have yet,
+after the scope check above. Remote URLs are printed as "origin" in all output.
 --dry-run changes no git state: it does not switch or create branches, does not
-stage files and does not write the index. It lists what a real run would commit
-and how many commits it would push.
+stage files and does not write the index. It applies the same checks and lists what
+a real run would commit and how many commits it would push.
 Staged paths are read with --no-renames, so a rename out of scope shows both paths.
 Never pushes with --force or --force-with-lease.
 """
 
 import argparse
+import re
 import subprocess
 import sys
 
@@ -20,6 +35,7 @@ from gh_client import configure_output
 
 PROTECTED_BRANCHES = ("main", "master")
 TRAILER = "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+NO_BASE_MESSAGE = "no remote base found; fetch origin before publishing"
 EXIT_OK = 0
 EXIT_GIT = 1
 EXIT_REFUSED = 2
@@ -109,8 +125,28 @@ def _git(*args, stdin=None):
     )
 
 
+def _origin_urls():
+    """Every URL configured for origin, fetch and push. Empty when origin is not set."""
+    found = _git("config", "--get-regexp", r"^remote\.origin\.(url|pushurl)$")
+    if found.returncode != 0:
+        return []
+    urls = []
+    for line in found.stdout.splitlines():
+        value = line.partition(" ")[2].strip()
+        if value:
+            urls.append(value)
+    return urls
+
+
+def _redact(text, urls):
+    """Print origin's URL as 'origin', and drop user:password@ from any other URL in the text."""
+    for url in sorted(set(urls), key=len, reverse=True):
+        text = text.replace(url, "origin")
+    return re.sub(r"([a-z][a-z0-9+.-]*://)[^/\s@]+@", r"\1", text, flags=re.IGNORECASE)
+
+
 def _report_failure(label, result):
-    detail = (result.stderr or result.stdout or "").strip()
+    detail = _redact((result.stderr or result.stdout or "").strip(), _origin_urls())
     print(f"error: {label} failed: {detail}", file=sys.stderr)
     return EXIT_GIT
 
@@ -138,15 +174,19 @@ def _ensure_branch(name):
     return None
 
 
-def _refuse_outside_scope(outside):
-    print("refused: staged paths outside the scopes (nothing committed):", file=sys.stderr)
+STAGED_HEADING = "staged paths outside the scopes (nothing committed):"
+UNPUSHED_HEADING = "unpushed commits change paths outside the scopes (nothing pushed):"
+
+
+def _refuse_outside_scope(outside, heading):
+    print(f"refused: {heading}", file=sys.stderr)
     for path in outside:
         print(f"  {path}", file=sys.stderr)
     return EXIT_OUTSIDE_SCOPE
 
 
 def _dry_run(args, scopes):
-    """Report what a real run would commit. Reads git state only: no branch, staging or index writes."""
+    """Report what a real run would commit and push. Reads git state only: no branch, staging or index writes."""
     status = _git(
         "--no-optional-locks", "status", "--porcelain", "-z", "--no-renames", "--untracked-files=all"
     )
@@ -155,11 +195,11 @@ def _dry_run(args, scopes):
     entries = parse_status(status.stdout)
     staged_outside = paths_within_scopes([path for staged, path in entries if staged], scopes)
     if staged_outside:
-        return _refuse_outside_scope(staged_outside)
+        return _refuse_outside_scope(staged_outside, STAGED_HEADING)
+    code, _, pending = _check_unpushed(_publish_tip(args.branch), args.branch, scopes)
+    if code is not None:
+        return code
     would_commit = [path for _, path in entries if not paths_within_scopes([path], scopes)]
-    pending, _, failed = _count_unpublished(_publish_tip(args.branch), args.branch)
-    if failed is not None:
-        return _report_failure("counting unpublished commits", failed)
     if not would_commit and pending == 0:
         print("nothing to publish")
         return EXIT_OK
@@ -192,28 +232,55 @@ def _publish_tip(name):
     return name if _ref_exists(f"refs/heads/{name}") else "HEAD"
 
 
-def _count_unpublished(tip, name):
-    """Count commits reachable from tip but not from the remote. Returns (count, base, failed_result).
-
-    base is origin/NAME when that ref exists, else origin/main. If neither exists there is no
-    remote history to compare with, so nothing is counted. count is None when git failed.
-    """
+def _remote_base(name):
+    """origin/NAME when that ref exists, else origin/main, else None. There is no other fallback."""
     if _ref_exists(f"refs/remotes/origin/{name}"):
-        base = f"origin/{name}"
-    elif _ref_exists("refs/remotes/origin/main"):
-        base = "origin/main"
-    else:
-        return 0, "origin/main", None
+        return f"origin/{name}"
+    if _ref_exists("refs/remotes/origin/main"):
+        return "origin/main"
+    return None
+
+
+def _unpushed_paths(base, tip):
+    """Sorted paths that any commit in base..tip changes. Returns (paths, failed_result).
+
+    git log lists each commit's own changes, one commit at a time, with renames off. -m covers
+    merges against every parent. A file a commit adds and a later commit removes still shows up.
+    """
+    listed = _git("log", "-m", "--no-renames", "--name-only", "-z", "--format=", f"{base}..{tip}")
+    if listed.returncode != 0:
+        return None, listed
+    return sorted({path for path in listed.stdout.split("\0") if path}), None
+
+
+def _check_unpushed(tip, name, scopes):
+    """Check every commit a push of tip would send beyond the remote base against the scopes.
+
+    Returns (code, base, count). code is None when all of them are in scope. Otherwise code is the
+    exit code to return and the reason has already been printed. Exits 1 with NO_BASE_MESSAGE when
+    no remote base exists, because the unpushed state is then unknown and nothing is counted as published.
+    count is the number of unpushed commits.
+    """
+    base = _remote_base(name)
+    if base is None:
+        print(f"error: {NO_BASE_MESSAGE}", file=sys.stderr)
+        return EXIT_GIT, None, None
     counted = _git("rev-list", "--count", f"{base}..{tip}")
     if counted.returncode != 0:
-        return None, base, counted
-    return int(counted.stdout.strip()), base, None
+        return _report_failure("counting unpublished commits", counted), None, None
+    paths, failed = _unpushed_paths(base, tip)
+    if failed is not None:
+        return _report_failure("listing unpublished paths", failed), None, None
+    outside = paths_within_scopes(paths, scopes)
+    if outside:
+        return _refuse_outside_scope(outside, UNPUSHED_HEADING), None, None
+    return None, base, int(counted.stdout.strip())
 
 
 def _push(name):
-    """Push with -u. Never forced. Returns (exit code, summary of the pushed range)."""
+    """Push with -u. Never forced. Returns (exit code, summary of the pushed range). Remote URLs are redacted."""
     pushed = _git("push", "-u", "origin", name)
-    output = (pushed.stderr or pushed.stdout or "").strip()
+    output = _redact((pushed.stderr or pushed.stdout or "").strip(), _origin_urls())
     if pushed.returncode != 0:
         print(f"error: push failed: {output}", file=sys.stderr)
         return EXIT_GIT, ""
@@ -247,6 +314,11 @@ def main(argv=None):
     if failed is not None:
         return failed
 
+    # Checked before staging, so a refusal here leaves the index and HEAD untouched.
+    code, base, pending = _check_unpushed(args.branch, args.branch, scopes)
+    if code is not None:
+        return code
+
     added = _git("add", "--", *scopes)
     if added.returncode != 0:
         return _report_failure("staging the scopes", added)
@@ -256,9 +328,6 @@ def main(argv=None):
         return _report_failure("listing staged paths", listed)
     paths = [path for path in listed.stdout.split("\0") if path]
     if not paths:
-        pending, base, failed = _count_unpublished(args.branch, args.branch)
-        if failed is not None:
-            return _report_failure("counting unpublished commits", failed)
         if pending == 0:
             print("nothing to publish")
             return EXIT_OK
@@ -271,7 +340,7 @@ def main(argv=None):
     outside = paths_within_scopes(paths, scopes)
     if outside:
         _unstage()
-        return _refuse_outside_scope(outside)
+        return _refuse_outside_scope(outside, STAGED_HEADING)
 
     message = f"{args.message.strip()}\n\n{TRAILER}\n"
     committed = _git("commit", "-F", "-", stdin=message)

@@ -8,7 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const schemaPath = resolve(here, "../../../prisma/schema.prisma");
 const schema = readFileSync(schemaPath, "utf8");
 
-describe("Prisma schema (PR-1: empty)", () => {
+describe("Prisma schema", () => {
   // AC11: the datasource provider is postgresql.
   it("AC11: the datasource provider is postgresql", () => {
     const datasource = /datasource\s+\w+\s*\{([^}]*)\}/.exec(schema);
@@ -21,8 +21,22 @@ describe("Prisma schema (PR-1: empty)", () => {
     expect(datasource?.[1]).not.toMatch(/\burl\s*=/);
   });
 
-  it("AC11: the PR-1 schema has no models", () => {
-    expect(schema).not.toMatch(/^\s*model\s+\w+/m);
+  it("PR-2: the schema has one model, Todo", () => {
+    const models = [...schema.matchAll(/^\s*model\s+(\w+)\s*\{/gm)].map(
+      (match) => match[1],
+    );
+    expect(models).toEqual(["Todo"]);
+  });
+
+  it('PR-2: the Todo model maps to table "Todo"', () => {
+    const todo = /model\s+Todo\s*\{([\s\S]*?)\n\}/.exec(schema);
+    expect(todo).not.toBeNull();
+    expect(todo?.[1]).toMatch(/@@map\("Todo"\)/);
+  });
+
+  it("PR-2: the Todo title is VARCHAR(200)", () => {
+    const todo = /model\s+Todo\s*\{([\s\S]*?)\n\}/.exec(schema);
+    expect(todo?.[1]).toMatch(/^\s*title\s+String\s+@db\.VarChar\(200\)\s*$/m);
   });
 });
 

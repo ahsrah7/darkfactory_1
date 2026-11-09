@@ -41,6 +41,13 @@
     }
   },
   "copilotAgents": ["software-developer", "senior-software-engineer", "principal-software-engineer", "bug-fixer", "test-automator"],
+  "executionBackend": "local",
+  "localRunner": {
+    "copilotCommand": "copilot",
+    "permissionMode": "narrow",
+    "allowedTools": ["read", "write", "shell(git:*)", "shell(npm:*)", "shell(go:*)", "shell(npx:*)"],
+    "agentTimeoutMinutes": 45
+  },
   "humanGates": {
     "beforeMerge": false,
     "beforeProductionDeploy": true,

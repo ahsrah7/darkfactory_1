@@ -11,9 +11,19 @@ describe("createApp", () => {
   });
 
   it("AC6: GET /health does not need a database", async () => {
-    // createApp() takes no database handle, so this runs with DATABASE_URL unset.
-    const response = await request(createApp()).get("/health");
-    expect(response.status).toBe(200);
+    // Unset DATABASE_URL for this request only, then restore it.
+    const saved = process.env["DATABASE_URL"];
+    delete process.env["DATABASE_URL"];
+    try {
+      expect(process.env["DATABASE_URL"]).toBeUndefined();
+      const response = await request(createApp()).get("/health");
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ status: "ok" });
+    } finally {
+      if (saved !== undefined) {
+        process.env["DATABASE_URL"] = saved;
+      }
+    }
   });
 
   it("returns the Express default 404 for any other route", async () => {

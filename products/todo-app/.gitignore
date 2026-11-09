@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Environment files: never commit real values. .env.example is the only exception.
+.env
+.env.*
+!.env.example
+
+# Build output and tool caches
+.next/
+out/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Generated Prisma client (created by `npm run db:generate`)
+apps/api/src/generated/

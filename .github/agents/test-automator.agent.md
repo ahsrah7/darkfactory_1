@@ -16,6 +16,6 @@ Steps:
 3. Create or update the test folder for this test case. Include a README that lists dependencies and how to run it.
 4. Use environment variables for config. Never hard-code credentials.
 5. Run the test locally. It must fail for the reason in the bug, or pass for a working feature.
-6. Sync `origin/main` into the branch, push it (never force push), and open a PR with `gh pr create --base main --head <branch>`, using `.github/PULL_REQUEST_TEMPLATE.md`. List each test command and its exit code in the validation section. Use the runner's `GH_TOKEN`; if it or `gh` is missing, set Blocked. Move the test ticket to Automation In Review. Never merge the PR yourself.
+6. Sync `origin/main` into the branch if it is ahead (never force push). Publish with `python .github/skills/github-pr/scripts/publish_branch.py --branch <branch> --scope <paths> --message "<tracker-key>: <summary>"`, where `<paths>` is the test folder. Then open the PR with `python .github/skills/github-pr/scripts/open_pr.py --head <branch> --title "<tracker-key>: <summary>" --body-file <file>`, using `.github/PULL_REQUEST_TEMPLATE.md` for the body. List each test command and its exit code in the validation section. If the GitHub token is missing, set Blocked. Move the test ticket to Automation In Review. Never merge the PR yourself.
 
 Never weaken a test to make it pass. If the test cannot run, set Blocked and say why.

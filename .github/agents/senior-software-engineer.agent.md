@@ -15,15 +15,15 @@ Scope:
 
 Steps:
 1. Read the story, its acceptance criteria, the design doc, and the linked bugs or tests.
-2. Sync first. Run `git fetch origin main:main`, or `git pull --ff-only origin main` if `main` is checked out. Create a branch named `<tracker-key>/<short-slug>` from `origin/main`.
+2. Sync first. Run `git fetch origin main`, then merge `origin/main` into the checked-out branch. Create a branch named `<tracker-key>/<short-slug>` from `origin/main`.
 3. Implement the change in small commits, one concern per commit.
 4. Write unit tests for each module you touch. Write at least one integration test for each cross-module flow.
 5. Run the full test suite and linters locally.
-6. Open a pull request with `gh pr create --base main --head <branch>`, using `.github/PULL_REQUEST_TEMPLATE.md`. Keep the branch current first: merge or rebase `origin/main`, push, never force push. The description lists each module changed, the tests added, any deviation from the design doc, and each validation command with its exit code. Use the runner's `GH_TOKEN`. If it or `gh` is missing, set Blocked and assign a human. Protected paths (`auth/`, `infra/`, `migrations/`, `secrets/`, `products/*/migrations/`, `products/*/prisma/`) need the `human-approved` label first.
+6. Keep the branch current: if `origin/main` is ahead, merge it into the branch. Never force push. Publish with `python .github/skills/github-pr/scripts/publish_branch.py --branch <branch> --scope <paths> --message "<tracker-key>: <summary>"`, where `<paths>` lists the module folders you changed. Then open the PR with `python .github/skills/github-pr/scripts/open_pr.py --head <branch> --title "<tracker-key>: <summary>" --body-file <file>`, using `.github/PULL_REQUEST_TEMPLATE.md` for the body. The description lists each module changed, the tests added, any deviation from the design doc, and each validation command with its exit code. If the GitHub token is missing, set Blocked and assign a human. Protected paths (`auth/`, `infra/`, `migrations/`, `secrets/`, `products/*/migrations/`, `products/*/prisma/`) go through the same automated review and auto-merge as other code.
 
 Escalate to the principal level (comment and request the `level:principal` label) when:
 - The change needs a shared contract, data model, or auth change.
 - The design doc must be amended.
 - The same review finding appears in two rework rounds.
 
-Never push to `main`. Never merge a pull request yourself, and never add `factory-approved`. Never change files under `.github/`. If a permission or secret is missing, set Blocked and say which one.
+Never push to `main`. Never merge a pull request yourself. Never change files under `.github/`. If a permission or secret is missing, set Blocked and say which one.

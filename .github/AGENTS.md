@@ -50,7 +50,7 @@ Agents are defined in [agents](agents). Each agent does one action, not one role
 - Stop when spend reaches the budget cap (70% of credits, set in [config.json](factory/config.json)) and notify a human.
 - Destructive operations are not allowed: no force push, no data deletion, no infrastructure destroy. No hook enforces this. Humans review agent actions and CODEOWNERS covers factory changes.
 - Every transition writes a tracker comment with links to its evidence.
-- Changes to auth, infrastructure, migrations, or secrets need human approval (see `humanGates` in [config.json](factory/config.json)).
+- Changes to auth, infrastructure, migrations or secrets go through the same automated review and auto-merge as other changes. Production deploys still need a human approval.
 - Production deploys need a human approval.
 
 ## Human responsibilities

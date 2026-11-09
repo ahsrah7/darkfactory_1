@@ -1,8 +1,8 @@
 // Prisma schema for the Todo app.
 //
-// PR-1 (SCRUM-7) has no models. The Todo model and the first migration are added
-// in PR-2. The datasource URL is not set here. It comes from DATABASE_URL in
-// prisma.config.ts.
+// PR-1 (SCRUM-7) had no models. PR-2 (SCRUM-7) adds the Todo model, the only
+// model in this story, with its first migration in migrations/. The datasource
+// URL is not set here. It comes from DATABASE_URL in prisma.config.ts.
 
 generator client {
   provider            = "prisma-client"
@@ -12,4 +12,14 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+model Todo {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title     String   @db.VarChar(200)
+  completed Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz()
+  updatedAt DateTime @updatedAt @db.Timestamptz()
+
+  @@map("Todo")
 }

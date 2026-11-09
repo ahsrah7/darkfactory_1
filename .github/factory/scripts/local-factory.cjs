@@ -104,12 +104,6 @@ async function transition(key, toName) {
   });
 }
 
-function budgetCapUsd() {
-  const { creditBalanceUsd, allocationPercent } = config.budget;
-  if (typeof creditBalanceUsd !== 'number') return null;
-  return (creditBalanceUsd * allocationPercent) / 100;
-}
-
 function resolveAgent(transition, labels) {
   if (transition.agent !== ROUTED) return transition.agent;
   const match = Object.entries(config.levels.labels).find(([label]) => labels.includes(label));
@@ -202,13 +196,6 @@ async function main() {
   if (!config.factory.enabled) {
     log('Factory disabled in config.json.');
     return;
-  }
-
-  const cap = budgetCapUsd();
-  const spent = Number(env.BUDGET_SPENT_USD);
-  const budgetOk = cap !== null && Number.isFinite(spent) && spent < cap;
-  if (runEnabled && !budgetOk) {
-    throw new Error('Budget not confirmed: set budget.creditBalanceUsd in config.json and BUDGET_SPENT_USD.');
   }
 
   const runs = loadRuns();

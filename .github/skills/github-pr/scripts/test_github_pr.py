@@ -61,8 +61,8 @@ class PlanReviewTests(unittest.TestCase):
             ["comment:escalate", "status:failure"],
         )
 
-    def test_approve_never_requests_changes_or_escalates(self):
-        for prior in range(6):
+    def test_approve_below_limit_never_requests_changes_or_escalates(self):
+        for prior in (0, 1, 2):
             for requires in (True, False):
                 with self.subTest(prior=prior, requires=requires):
                     actions = review_pr.plan_review("approve", prior, requires, 3)
@@ -71,8 +71,17 @@ class PlanReviewTests(unittest.TestCase):
                     self.assertNotIn("comment:escalate", actions)
                     self.assertNotIn("status:failure", actions)
 
+    def test_approve_at_or_above_limit_escalates_without_automerge(self):
+        for prior in (3, 4, 5):
+            for requires in (True, False):
+                with self.subTest(prior=prior, requires=requires):
+                    actions = review_pr.plan_review("approve", prior, requires, 3)
+                    self.assertEqual(actions, ["comment:escalate", "status:failure"])
+                    self.assertFalse(any(action.startswith("automerge") for action in actions))
+                    self.assertNotIn("comment:approve", actions)
+
     def test_request_changes_never_enables_automerge(self):
-        for prior in range(5):
+        for prior in range(6):
             with self.subTest(prior=prior):
                 actions = review_pr.plan_review("request-changes", prior, True, 3)
                 self.assertFalse(any(action.startswith("automerge") for action in actions))
@@ -584,10 +593,15 @@ class ReviewAutoMergeGuardTests(unittest.TestCase):
             with self.assertRaises(GhError):
                 review_pr.base_requires_status("o", "r", "main")
 
-    def test_base_branch_name_with_slash_is_encoded_safely(self):
+    def test_base_branch_name_with_slash_keeps_slash_in_path(self):
         with mock.patch.object(review_pr, "request", return_value={}) as request:
             review_pr.base_requires_status("o", "r", "release/1.0")
         self.assertEqual(request.call_args[0][1], "/repos/o/r/branches/release/1.0/protection")
+
+    def test_base_branch_name_with_query_and_fragment_chars_is_percent_encoded(self):
+        with mock.patch.object(review_pr, "request", return_value={}) as request:
+            review_pr.base_requires_status("o", "r", "feat?x#y")
+        self.assertEqual(request.call_args[0][1], "/repos/o/r/branches/feat%3Fx%23y/protection")
 
     def test_enable_auto_merge_sends_squash_mutation_for_pr_node_id(self):
         def fake_graphql(query, variables=None):
@@ -609,6 +623,15 @@ class ReviewAutoMergeGuardTests(unittest.TestCase):
             with self.assertRaises(GhError):
                 review_pr.enable_auto_merge("o", "r", 99)
 
+    def test_enable_auto_merge_returns_none_when_github_reports_null(self):
+        def fake_graphql(query, variables=None):
+            if query == review_pr.PR_ID_QUERY:
+                return {"repository": {"pullRequest": {"id": "PR_node_8"}}}
+            return {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": None}}}
+
+        with mock.patch.object(review_pr, "graphql", side_effect=fake_graphql):
+            self.assertIsNone(review_pr.enable_auto_merge("o", "r", 8))
+
 
 PR_OPEN = {
     "state": "open",
@@ -628,7 +651,8 @@ class ReviewExecutionTests(unittest.TestCase):
         with open(self.body_path, "w", encoding="utf-8") as handle:
             handle.write("Review body\n")
 
-    def _run(self, decision, protection=None, protection_missing=False, comments=(), pr=PR_OPEN, extra=()):
+    def _run(self, decision, protection=None, protection_missing=False, comments=(), pr=PR_OPEN, extra=(),
+             auto_merge_request={"enabledAt": "t"}):
         calls = []
 
         def fake_request(method, path, body=None):
@@ -645,16 +669,19 @@ class ReviewExecutionTests(unittest.TestCase):
             calls.append(("GRAPHQL", query, variables))
             if query == review_pr.PR_ID_QUERY:
                 return {"repository": {"pullRequest": {"id": "PR_node_8"}}}
-            return {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": {"enabledAt": "t"}}}}
+            return {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": auto_merge_request}}}
 
         argv = ["--pr", "8", "--decision", decision, "--body-file", self.body_path, *extra]
         out = io.StringIO()
+        err = io.StringIO()
         with mock.patch.object(review_pr, "repo", return_value=("o", "r")), \
                 mock.patch.object(review_pr, "request", side_effect=fake_request), \
                 mock.patch.object(review_pr, "request_all", return_value=list(comments)), \
                 mock.patch.object(review_pr, "graphql", side_effect=fake_graphql), \
-                contextlib.redirect_stdout(out):
+                contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
             code = review_pr.main(argv)
+        self.last_err = err.getvalue()
         return code, calls, out.getvalue()
 
     @staticmethod
@@ -722,6 +749,35 @@ class ReviewExecutionTests(unittest.TestCase):
         code, calls, _ = self._run("request-changes", protection=NO_STATUS, comments=prior)
         self.assertEqual(code, 0)
         self.assertEqual(self._posts(calls)[1][1]["body"].splitlines()[0], "<!-- factory-review:request-changes -->")
+
+    def test_approve_with_null_automerge_response_reports_not_enabled_and_fails(self):
+        code, calls, out = self._run("approve", protection=REQUIRES_STATUS, auto_merge_request=None)
+        self.assertEqual(code, 1)
+        self.assertIn("  automerge:not-enabled", out)
+        self.assertNotIn("  automerge:enable", out)
+        self.assertIn("did not enable auto-merge on #8", self.last_err)
+        self.assertEqual(len(self._graphql_calls(calls)), 2)
+        posts = self._posts(calls)
+        self.assertEqual(posts[0][1]["state"], "success")
+        self.assertEqual(posts[1][1]["body"].splitlines()[0], "<!-- factory-review:approve -->")
+
+    def test_approve_with_enabled_automerge_reports_enable_and_succeeds(self):
+        code, _, out = self._run("approve", protection=REQUIRES_STATUS)
+        self.assertEqual(code, 0)
+        self.assertIn("  automerge:enable", out)
+        self.assertNotIn("automerge:not-enabled", out)
+        self.assertEqual(self.last_err, "")
+
+    def test_approve_at_limit_escalates_and_never_enables_automerge(self):
+        prior = [{"body": review_pr.MARKERS["request-changes"] + "\nfix"} for _ in range(3)]
+        code, calls, out = self._run("approve", protection=REQUIRES_STATUS, comments=prior)
+        self.assertEqual(code, 0)
+        self.assertEqual(self._graphql_calls(calls), [])
+        self.assertIn("  comment:escalate", out)
+        self.assertNotIn("automerge", out)
+        posts = self._posts(calls)
+        self.assertEqual(posts[0][1]["state"], "failure")
+        self.assertEqual(posts[1][1]["body"].splitlines()[0], "<!-- factory-review:escalate -->")
 
     def test_dry_run_makes_no_writes(self):
         code, calls, out = self._run("approve", protection=REQUIRES_STATUS, extra=["--dry-run"])

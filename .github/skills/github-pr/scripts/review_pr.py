@@ -4,7 +4,9 @@ Usage: review_pr.py --pr N --decision approve|request-changes --body-file FILE [
 
 Posts the review comment, sets the factory/review commit status and, on approval,
 enables squash auto-merge only when the base branch protection requires factory/review.
-Exit codes: 0 done or dry run; 1 GitHub error; 2 refused input.
+At or above the rework limit nothing is auto-merged: the decision escalates.
+Exit codes: 0 done or dry run; 1 GitHub error, or auto-merge was not enabled after an approval
+(reported as automerge:not-enabled); 2 refused input.
 """
 
 import argparse
@@ -49,19 +51,22 @@ mutation($id: ID!) {
 
 
 def plan_review(decision, prior_rework_rounds, base_requires_status, max_rework):
-    """Return the ordered actions for a review decision. Pure: no I/O."""
+    """Return the ordered actions for a review decision. Pure: no I/O.
+
+    At or above the rework limit the PR is never auto-merged: both decisions escalate.
+    """
+    if decision not in DECISIONS:
+        raise ValueError(f"unknown decision: {decision}")
+    if prior_rework_rounds >= max_rework:
+        return ["comment:escalate", "status:failure"]
     if decision == "request-changes":
-        if prior_rework_rounds >= max_rework:
-            return ["comment:escalate", "status:failure"]
         return ["comment:request-changes", "status:failure"]
-    if decision == "approve":
-        actions = ["comment:approve", "status:success"]
-        if base_requires_status:
-            actions.append("automerge:enable")
-        else:
-            actions.append("automerge:skipped-no-protection")
-        return actions
-    raise ValueError(f"unknown decision: {decision}")
+    actions = ["comment:approve", "status:success"]
+    if base_requires_status:
+        actions.append("automerge:enable")
+    else:
+        actions.append("automerge:skipped-no-protection")
+    return actions
 
 
 def protection_requires_status(protection):
@@ -111,15 +116,13 @@ def base_requires_status(owner, name, base):
 
 
 def enable_auto_merge(owner, name, number):
+    """Enable squash auto-merge. Return GitHub's autoMergeRequest, or None when GitHub did not enable it."""
     data = graphql(PR_ID_QUERY, {"owner": owner, "name": name, "number": number})
     pull_request = (data.get("repository") or {}).get("pullRequest")
     if not pull_request:
         raise GhError(f"Pull request #{number} not found for auto-merge.")
     result = graphql(AUTO_MERGE_MUTATION, {"id": pull_request["id"]})
-    enabled = result["enablePullRequestAutoMerge"]["pullRequest"]["autoMergeRequest"]
-    if enabled is None:
-        print("warning: GitHub did not report auto-merge as enabled", file=sys.stderr)
-    return enabled
+    return result["enablePullRequestAutoMerge"]["pullRequest"]["autoMergeRequest"]
 
 
 def _read_body(path):
@@ -174,12 +177,22 @@ def _execute(args, body):
         },
     )
     request("POST", f"/repos/{owner}/{name}/issues/{args.pr}/comments", {"body": comment})
+    automerge_enabled = True
     if "automerge:enable" in actions:
-        enable_auto_merge(owner, name, args.pr)
+        automerge_enabled = enable_auto_merge(owner, name, args.pr) is not None
+        if not automerge_enabled:
+            actions = ["automerge:not-enabled" if action == "automerge:enable" else action for action in actions]
 
     print("actions:")
     for action in actions:
         print(f"  {action}")
+    if not automerge_enabled:
+        print(
+            f"error: GitHub did not enable auto-merge on #{args.pr}. The review comment and status were posted. "
+            "Merge by hand or check branch protection. Do not re-run review_pr.py: it would post a second review.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

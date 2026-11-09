@@ -24,8 +24,8 @@ Add `--dry-run` to publish_branch.py, open_pr.py or review_pr.py to preview with
 ## Review decisions (plan_review)
 
 - request-changes below the limit: review comment with the request-changes marker, status `factory/review` = failure.
-- request-changes at the limit (3 prior rounds): escalation comment, status failure. Not auto-merged. A human decides.
-- approve: review comment, status success. Squash auto-merge is enabled only when base branch protection requires `factory/review`. Otherwise the action is `automerge:skipped-no-protection`.
+- request-changes or approve at the limit (3 prior rounds): escalation comment, status failure. Not auto-merged, even when approved. A human decides.
+- approve below the limit: review comment, status success. Squash auto-merge is enabled only when base branch protection requires `factory/review`. Otherwise the action is `automerge:skipped-no-protection`. If GitHub does not enable auto-merge, the action is `automerge:not-enabled` and the script exits 1.
 
 ## Rules
 

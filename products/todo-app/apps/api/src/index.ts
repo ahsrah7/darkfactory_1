@@ -27,8 +27,19 @@ server.on("error", (error: NodeJS.ErrnoException) => {
   fail(`Cannot listen on port ${port}: ${error.code ?? error.message}`);
 });
 
+// Time allowed for in-flight requests and the database disconnect before the
+// process is forced to exit.
+const SHUTDOWN_TIMEOUT_MS = 5_000;
+
 function shutdown(signal: string): void {
   console.log(`Received ${signal}, shutting down`);
+  setTimeout(() => {
+    server.closeAllConnections?.();
+    console.error(
+      `Shutdown did not finish within ${SHUTDOWN_TIMEOUT_MS} ms, forcing exit.`,
+    );
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
   server.close(() => {
     void prisma.$disconnect().finally(() => process.exit(0));
   });

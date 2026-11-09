@@ -50,9 +50,10 @@ function parseDatabaseUrl(raw: string | undefined): string {
       "DATABASE_URL is not set. Set it in the environment, or in a local .env file read with --env-file. See .env.example.",
     );
   }
+  const value = raw.trim();
   let parsed: URL;
   try {
-    parsed = new URL(raw);
+    parsed = new URL(value);
   } catch {
     throw new ConfigError(
       "DATABASE_URL is not a valid URL. Check it against .env.example. The value is not shown.",
@@ -63,5 +64,5 @@ function parseDatabaseUrl(raw: string | undefined): string {
       "DATABASE_URL must start with postgresql://. The value is not shown.",
     );
   }
-  return raw;
+  return value;
 }

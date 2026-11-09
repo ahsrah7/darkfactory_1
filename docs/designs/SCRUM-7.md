@@ -48,7 +48,7 @@ Prisma 7 notes from the vendor docs. The spike must confirm each one on the pinn
 | `products/todo-app/migrations/<timestamp>_init_todo/` | First migration SQL. | PR-2 |
 | `products/todo-app/.env.example` | Placeholders only. | PR-1 |
 | `products/todo-app/README.md` | Commands, health endpoint, configuration names, migration policy, secrets rule. | PR-1 |
-| `.gitignore` (repo root) | Add `.env*` and `!.env.example`. Current rules are `.env` and `*.env`, so `.env.local` is not ignored today. Not a protected path. | PR-1 |
+| `.gitignore` (repo root) | Not changed, on purpose. This story's writes are limited to `products/todo-app/`. The env-file rules it needs are already in `products/todo-app/.gitignore`: `.env.*` with `!.env.example`, which also covers `.env.local`. The root file keeps its `.env` and `*.env` rules. | PR-1 (not made) |
 
 Not touched by this story: everything under `.github/`, `products/.gitkeep`, `transcript.txt`, and `.github/hooks/hooks.json`. The last three are uncommitted and must not be staged into either PR.
 

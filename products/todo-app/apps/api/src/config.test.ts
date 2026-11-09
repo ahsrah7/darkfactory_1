@@ -47,6 +47,11 @@ describe("loadConfig", () => {
     expect(DEFAULT_PORT).toBe(4000);
   });
 
+  it("returns the trimmed DATABASE_URL when the value has surrounding spaces", () => {
+    const config = loadConfig({ DATABASE_URL: `  ${VALID_URL}\t` });
+    expect(config.databaseUrl).toBe(VALID_URL);
+  });
+
   it("accepts postgres:// as well as postgresql://", () => {
     expect(
       loadConfig({ DATABASE_URL: "postgres://localhost:5432/todo_test" })

@@ -41,9 +41,9 @@ describe("Prisma schema", () => {
 });
 
 describe("createPrismaClient", () => {
-  // AC11: the client can be built with no database reachable. It opens no
-  // connection until a query runs, and PR-1 runs none.
-  it("AC11: builds a client and disconnects without connecting to a database", async () => {
+  // Only checks that the factory returns a client and that $disconnect
+  // resolves. Generation with no database is checked by `npm run db:check`.
+  it("createPrismaClient returns a client whose $disconnect resolves", async () => {
     const client = createPrismaClient("postgresql://localhost:5432/todo_test");
     expect(client).toBeDefined();
     await expect(client.$disconnect()).resolves.toBeUndefined();

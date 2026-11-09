@@ -10,7 +10,7 @@ Run every command from `products/todo-app/`. Install once with `npm ci`.
 
 ## Requirements
 
-- Node.js `^20.19.0 || ^22.12.0 || >=24.0.0`. This is the range Prisma 7 supports. The engines field in `package.json` enforces it.
+- Node.js `^20.19.0 || ^22.12.0 || >=24.0.0`. This is the range Prisma 7 supports. The `engines` field in `package.json` states it. npm enforces it only with `engine-strict` set (for example `npm ci --engine-strict`). Without that setting, npm prints a warning and continues.
 - npm 10 or later.
 
 ## Build

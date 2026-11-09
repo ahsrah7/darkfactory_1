@@ -76,9 +76,9 @@ describe("API entry point", () => {
     expect(result.stderr).not.toContain("://");
   }, 15_000);
 
-  // AC5: the API logs its port, is still running 2 seconds later, and its PID
+  // AC5: the API logs its port, is still running 10 seconds later, and its PID
   // is gone after it is stopped.
-  it("AC5: logs its port, stays alive for 2 seconds, and its PID is gone after kill", async () => {
+  it("AC5: logs its port, stays alive for 10 seconds, and its PID is gone after kill", async () => {
     expect(
       existsSync(entryPoint),
       `missing ${entryPoint}; run "npm run build -w apps/api" first`,
@@ -121,10 +121,10 @@ describe("API entry point", () => {
         `no "API listening on port ${port}" line. stdout: ${stdout} stderr: ${stderr}`,
       ).toBe(true);
 
-      await sleep(2_000);
+      await sleep(10_000);
       expect(
         child.exitCode,
-        `API exited within 2 seconds. stderr: ${stderr}`,
+        `API exited within 10 seconds. stderr: ${stderr}`,
       ).toBeNull();
       expect(child.signalCode).toBeNull();
 

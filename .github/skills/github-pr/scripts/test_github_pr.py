@@ -571,6 +571,69 @@ class PublishOutOfScopeRenameTests(TempRepoCase):
         self.assertEqual(self.git("diff", "--cached", "--name-only").strip(), "")
 
 
+class RemotePublishTests(TempRepoCase):
+    """Nothing staged: publish_branch must push local commits that origin does not have yet."""
+
+    def setUp(self):
+        super().setUp()
+        remote = tempfile.TemporaryDirectory()
+        self.addCleanup(remote.cleanup)
+        self.remote_dir = remote.name
+        subprocess.run(["git", "init", "-q", "--bare", self.remote_dir], capture_output=True, check=True)
+        self.git("remote", "add", "origin", self.remote_dir)
+        self.git("push", "-q", "origin", "work:refs/heads/main")
+
+    def remote_ref(self, name):
+        result = subprocess.run(
+            ["git", "--git-dir", self.remote_dir, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    def commit_locally(self):
+        self.write("products/x/c.txt", "local commit\n")
+        self.git("add", "products/x/c.txt")
+        self.git("commit", "-q", "-m", "local work")
+
+    def test_nothing_staged_and_ahead_pushes_local_commits(self):
+        self.commit_locally()
+        head = self.git("rev-parse", "HEAD").strip()
+        self.assertIsNone(self.remote_ref("work"))
+
+        code, out, err = self.run_publish(["--branch", "work", "--scope", "products/x", "--message", "m"])
+
+        self.assertEqual(code, publish_branch.EXIT_OK, err)
+        self.assertIn("pushed 1 unpublished commit(s)", out)
+        self.assertEqual(self.remote_ref("work"), head)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
+
+    def test_nothing_staged_and_not_ahead_pushes_nothing(self):
+        before = self.snapshot()
+
+        code, out, err = self.run_publish(["--branch", "work", "--scope", "products/x", "--message", "m"])
+
+        self.assertEqual(code, publish_branch.EXIT_OK, err)
+        self.assertIn("nothing to publish", out)
+        self.assertIsNone(self.remote_ref("work"))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_dry_run_when_ahead_reports_push_and_pushes_nothing(self):
+        self.commit_locally()
+        before = self.snapshot()
+
+        code, out, err = self.run_publish(
+            ["--branch", "work", "--scope", "products/x", "--message", "m", "--dry-run"]
+        )
+
+        self.assertEqual(code, publish_branch.EXIT_OK, err)
+        self.assertIn("would push 1 commit to origin/work", out)
+        self.assertNotIn("nothing to publish", out)
+        self.assertIsNone(self.remote_ref("work"))
+        self.assertEqual(self.snapshot(), before)
+
+
 class ReviewAutoMergeGuardTests(unittest.TestCase):
     def test_base_without_factory_review_does_not_require_status(self):
         protection = {"required_status_checks": {"contexts": ["test"]}}

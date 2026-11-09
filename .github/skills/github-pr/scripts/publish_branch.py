@@ -4,8 +4,10 @@ Usage: publish_branch.py --branch NAME --scope PATH [--scope PATH ...] --message
 
 Exit codes: 0 published, dry run done, or nothing to publish; 1 git failed;
 2 refused input; 3 staged paths outside the scopes (nothing committed).
+With nothing staged, it still pushes local commits the remote does not have yet.
 --dry-run changes no git state: it does not switch or create branches, does not
-stage files and does not write the index. It lists what a real run would commit.
+stage files and does not write the index. It lists what a real run would commit
+and how many commits it would push.
 Staged paths are read with --no-renames, so a rename out of scope shows both paths.
 Never pushes with --force or --force-with-lease.
 """
@@ -155,14 +157,21 @@ def _dry_run(args, scopes):
     if staged_outside:
         return _refuse_outside_scope(staged_outside)
     would_commit = [path for _, path in entries if not paths_within_scopes([path], scopes)]
-    if not would_commit:
+    pending, _, failed = _count_unpublished(_publish_tip(args.branch), args.branch)
+    if failed is not None:
+        return _report_failure("counting unpublished commits", failed)
+    if not would_commit and pending == 0:
         print("nothing to publish")
         return EXIT_OK
-    print(f"dry run: would commit {len(would_commit)} path(s) to {args.branch}:")
-    for path in would_commit:
-        print(f"  {path}")
-    print(f"message: {args.message.strip()}")
-    print(f"trailer: {TRAILER}")
+    if would_commit:
+        print(f"dry run: would commit {len(would_commit)} path(s) to {args.branch}:")
+        for path in would_commit:
+            print(f"  {path}")
+        print(f"message: {args.message.strip()}")
+        print(f"trailer: {TRAILER}")
+    total = pending + (1 if would_commit else 0)
+    noun = "commit" if total == 1 else "commits"
+    print(f"dry run: would push {total} {noun} to origin/{args.branch}")
     print("dry run: no branch, index or file was changed")
     return EXIT_OK
 
@@ -172,6 +181,43 @@ def _summarize_push(output):
         if "->" in line:
             return line.strip()
     return "ok"
+
+
+def _ref_exists(ref):
+    return _git("rev-parse", "--verify", "--quiet", ref).returncode == 0
+
+
+def _publish_tip(name):
+    """The commit a real run would push: the branch itself if it exists, else HEAD (which the real run branches from)."""
+    return name if _ref_exists(f"refs/heads/{name}") else "HEAD"
+
+
+def _count_unpublished(tip, name):
+    """Count commits reachable from tip but not from the remote. Returns (count, base, failed_result).
+
+    base is origin/NAME when that ref exists, else origin/main. If neither exists there is no
+    remote history to compare with, so nothing is counted. count is None when git failed.
+    """
+    if _ref_exists(f"refs/remotes/origin/{name}"):
+        base = f"origin/{name}"
+    elif _ref_exists("refs/remotes/origin/main"):
+        base = "origin/main"
+    else:
+        return 0, "origin/main", None
+    counted = _git("rev-list", "--count", f"{base}..{tip}")
+    if counted.returncode != 0:
+        return None, base, counted
+    return int(counted.stdout.strip()), base, None
+
+
+def _push(name):
+    """Push with -u. Never forced. Returns (exit code, summary of the pushed range)."""
+    pushed = _git("push", "-u", "origin", name)
+    output = (pushed.stderr or pushed.stdout or "").strip()
+    if pushed.returncode != 0:
+        print(f"error: push failed: {output}", file=sys.stderr)
+        return EXIT_GIT, ""
+    return EXIT_OK, _summarize_push(output)
 
 
 def main(argv=None):
@@ -210,7 +256,16 @@ def main(argv=None):
         return _report_failure("listing staged paths", listed)
     paths = [path for path in listed.stdout.split("\0") if path]
     if not paths:
-        print("nothing to publish")
+        pending, base, failed = _count_unpublished(args.branch, args.branch)
+        if failed is not None:
+            return _report_failure("counting unpublished commits", failed)
+        if pending == 0:
+            print("nothing to publish")
+            return EXIT_OK
+        code, summary = _push(args.branch)
+        if code != EXIT_OK:
+            return code
+        print(f"pushed {pending} unpublished commit(s) from {base}: {summary}")
         return EXIT_OK
 
     outside = paths_within_scopes(paths, scopes)
@@ -225,12 +280,10 @@ def main(argv=None):
     short_sha = _git("rev-parse", "--short", "HEAD").stdout.strip()
     print(f"committed {short_sha} on {args.branch}")
 
-    pushed = _git("push", "-u", "origin", args.branch)
-    output = (pushed.stderr or pushed.stdout or "").strip()
-    if pushed.returncode != 0:
-        print(f"error: push failed: {output}", file=sys.stderr)
-        return EXIT_GIT
-    print(f"pushed: {_summarize_push(output)}")
+    code, summary = _push(args.branch)
+    if code != EXIT_OK:
+        return code
+    print(f"pushed: {summary}")
     return EXIT_OK
 
 

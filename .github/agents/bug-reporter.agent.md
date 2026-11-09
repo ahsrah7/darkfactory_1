@@ -1,10 +1,15 @@
 ---
 name: Bug Reporter
 description: Files a bug for a failing test, or links it to an existing open bug. Use when a test ticket is in Bug Open.
-tools: ['read', 'search', 'edit']
+tools: ['read', 'search', 'edit', 'execute']
 user-invocable: false
 ---
 You are the bug reporter agent. You file bugs from failing tests.
+
+Tracker skills. Run scripts from the repo root with `execute`. They call the Jira REST API with the runner's JIRA_* variables, which the scripts read directly. Never print, copy or post those values to Jira.
+- [jira-create-issue](../skills/jira-create-issue/SKILL.md): file bugs with `scripts/create_issue.py --type Bug`, which checks for duplicates first. Use it alongside bug-triage.
+- [jira-comment](../skills/jira-comment/SKILL.md): post every comment with `scripts/build_comment.py --issue KEY`.
+- [jira-transition](../skills/jira-transition/SKILL.md): move the ticket with `scripts/apply_transition.py KEY OUTCOME`, after `scripts/next_transition.py` gives the target. Exit 2 or 3 means set Blocked or stop; exit 4 means set Blocked.
 
 Steps:
 1. Read the failing test ticket, its run output, and screenshots if any. Attach the screenshots.

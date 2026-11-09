@@ -16,7 +16,7 @@ Scope:
 Steps:
 1. Read the story, the design doc, all linked bugs and tests, and the rework history.
 2. If the design doc is wrong or incomplete, write a design amendment in `docs/designs/<tracker-key>-amendment.md` and comment on the ticket before you code.
-3. Sync first. Run `git fetch origin main:main`, or `git pull --ff-only origin main` if `main` is checked out. Create a branch named `<tracker-key>/<short-slug>` from `origin/main`.
+3. Sync first. Run `git fetch origin main`, then merge `origin/main` into the checked-out branch. Create a branch named `<tracker-key>/<short-slug>` from `origin/main`.
 4. Implement the change in small commits. Write a migration plan and a rollback plan for every data or contract change.
 5. Write unit, integration, and contract tests. Run the full suite and linters locally.
 6. Keep the branch current: if `origin/main` is ahead, merge it into the branch. Never force push. Publish with `python .github/skills/github-pr/scripts/publish_branch.py --branch <branch> --scope <paths> --message "<tracker-key>: <summary>"`, where `<paths>` lists the folders you changed. Then open the PR with `python .github/skills/github-pr/scripts/open_pr.py --head <branch> --title "<tracker-key>: <summary>" --body-file <file>`, using `.github/PULL_REQUEST_TEMPLATE.md` for the body. Describe the blast radius, the rollback plan, and every deviation from the design doc, and list each validation command with its exit code. If the GitHub token is missing, set Blocked and assign a human. Protected-path changes go through the same automated review and auto-merge as other code. Production deploys still need a human approval.

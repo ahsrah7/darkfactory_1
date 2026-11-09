@@ -16,7 +16,7 @@ Scope:
 
 Steps:
 1. Read the story, its acceptance criteria, and the design doc in `docs/designs/`.
-2. Sync first. Run `git fetch origin main:main`, or `git pull --ff-only origin main` if `main` is checked out. Create a branch named `<tracker-key>/<short-slug>` from `origin/main`.
+2. Sync first. Run `git fetch origin main`, then merge `origin/main` into the checked-out branch. Create a branch named `<tracker-key>/<short-slug>` from `origin/main`.
 3. Implement the change. Write unit tests in the same change. Each acceptance criterion needs at least one test.
 4. Run the tests and linters. Fix failures before you open the pull request.
 5. Keep the branch current: if `origin/main` is ahead, merge it into the branch. Never force push. Then publish with `python .github/skills/github-pr/scripts/publish_branch.py --branch <branch> --scope <paths> --message "<tracker-key>: <summary>"`, where `<paths>` is your app folder (for example `products/<app-name>`). Write the PR body from `.github/PULL_REQUEST_TEMPLATE.md` to a file in the session files folder. Then open the PR with `python .github/skills/github-pr/scripts/open_pr.py --head <branch> --title "<tracker-key>: <summary>" --body-file <file>`. In the validation section, list each command you ran and its exit code. If the GitHub token is missing, set Blocked and assign a human. Do not use any other credential. Then stop; the orchestrator runs pr-reviewer on the PR.

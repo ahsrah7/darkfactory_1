@@ -194,7 +194,9 @@ def graphql(query, variables=None):
 
 
 def is_request_changes(comment):
-    return REQUEST_CHANGES_MARKER in (comment.get("body") or "")
+    """True only when the marker is the first line of the comment body."""
+    first_line = ((comment.get("body") or "").splitlines() or [""])[0]
+    return first_line.strip() == REQUEST_CHANGES_MARKER
 
 
 def count_request_changes(comments):

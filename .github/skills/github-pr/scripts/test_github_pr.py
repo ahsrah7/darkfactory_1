@@ -1,8 +1,12 @@
 """Unit tests for the factory PR scripts. No network access."""
 
+import contextlib
 import io
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 import unittest
 import urllib.error
 from unittest import mock
@@ -189,6 +193,37 @@ class BranchAndScopeTests(unittest.TestCase):
             [".github/workflows/ci.yml"],
         )
 
+    def test_dotdot_inside_a_name_is_allowed(self):
+        self.assertEqual(publish_branch.validate_scopes(["products/a..b", "x..y/z"]), [])
+
+    def test_dotdot_segment_refused_in_any_position(self):
+        for scope in ("..", "../x", "x/..", "x\\..\\y", "x/../y"):
+            with self.subTest(scope=scope):
+                self.assertTrue(publish_branch.validate_scopes([scope]))
+
+    def test_rename_out_of_scope_is_refused_with_no_renames_listing(self):
+        # `git diff --cached --no-renames --name-only` reports both sides of a rename.
+        # A rename from outside the scope into it must leave the outside side in the refused list.
+        no_renames = ["products/x/a.txt", "outside/a.txt"]
+        self.assertEqual(publish_branch.paths_within_scopes(no_renames, ["products/x"]), ["outside/a.txt"])
+
+    def test_rename_detected_listing_would_hide_the_outside_side(self):
+        # Shows why --no-renames is needed: the rename-detected listing names only the new path.
+        detected = ["products/x/a.txt"]
+        self.assertEqual(publish_branch.paths_within_scopes(detected, ["products/x"]), [])
+
+    def test_parse_status_marks_staged_entries(self):
+        output = " M products/x/b.txt\0M  outside/a.txt\0?? products/x/new/c.txt\0A  products/x/d.txt\0"
+        self.assertEqual(
+            publish_branch.parse_status(output),
+            [
+                (False, "products/x/b.txt"),
+                (True, "outside/a.txt"),
+                (False, "products/x/new/c.txt"),
+                (True, "products/x/d.txt"),
+            ],
+        )
+
 
 class PublishMainRefusalTests(unittest.TestCase):
     """Refusals must happen before any git command runs."""
@@ -365,6 +400,15 @@ class RequestTests(unittest.TestCase):
         ]
         self.assertEqual(gh_client.count_request_changes(comments), 1)
 
+    def test_marker_only_counts_on_first_line(self):
+        comments = [
+            {"body": "Summary first\n" + gh_client.REQUEST_CHANGES_MARKER + "\nfix it"},
+            {"body": "\n" + gh_client.REQUEST_CHANGES_MARKER},
+            {"body": "Quoted: " + gh_client.REQUEST_CHANGES_MARKER},
+            {"body": "  " + gh_client.REQUEST_CHANGES_MARKER + "  \r\nfix"},
+        ]
+        self.assertEqual([gh_client.is_request_changes(c) for c in comments], [False, False, False, True])
+
 
 class PrStateSummaryTests(unittest.TestCase):
     def test_checks_use_newest_run_per_name(self):
@@ -409,6 +453,288 @@ class PrFeedbackTests(unittest.TestCase):
             pr_feedback.format_inline({"path": "b.py", "line": None, "original_line": 5, "body": "x"}),
             "b.py:5 - x",
         )
+
+
+class TempRepoCase(unittest.TestCase):
+    """A throwaway git repository. Each test runs inside it and returns to the old directory afterwards."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        old_cwd = os.getcwd()
+        self.addCleanup(os.chdir, old_cwd)
+        os.chdir(tmp.name)
+        self.git("init", "-q")
+        self.git("config", "user.email", "test@example.invalid")
+        self.git("config", "user.name", "Test")
+        self.git("config", "commit.gpgsign", "false")
+        self.write("outside/a.txt", "a\n")
+        self.write("products/x/b.txt", "b\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "initial")
+        self.git("switch", "-q", "-c", "work")
+
+    def git(self, *args):
+        result = subprocess.run(["git", *args], capture_output=True, text=True, check=True)
+        return result.stdout
+
+    def write(self, path, text):
+        folder = os.path.dirname(path)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def snapshot(self):
+        return {
+            "branch": self.git("rev-parse", "--abbrev-ref", "HEAD").strip(),
+            "head": self.git("rev-parse", "HEAD").strip(),
+            "branches": self.git("branch", "--list"),
+            "index": self.git("ls-files", "--stage"),
+            "staged": self.git("diff", "--cached", "--name-status"),
+        }
+
+    def run_publish(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = publish_branch.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+
+class PublishDryRunTests(TempRepoCase):
+    def test_dry_run_changes_no_git_state(self):
+        self.write("products/x/b.txt", "changed\n")
+        self.write("products/x/new/c.txt", "new\n")
+        self.write("outside/a.txt", "unstaged change outside scope\n")
+        before = self.snapshot()
+
+        code, out, _ = self.run_publish(
+            ["--branch", "feat/dry", "--scope", "products/x", "--message", "m", "--dry-run"]
+        )
+
+        self.assertEqual(code, publish_branch.EXIT_OK)
+        self.assertIn("  products/x/b.txt", out)
+        self.assertIn("  products/x/new/c.txt", out)
+        self.assertNotIn("outside/a.txt", out)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(before["branch"], "work")
+        self.assertNotIn("feat/dry", self.git("branch", "--list"))
+
+    def test_dry_run_does_not_stage_scope_files(self):
+        self.write("products/x/new/c.txt", "new\n")
+        code, _, _ = self.run_publish(["--branch", "work", "--scope", "products/x", "--message", "m", "--dry-run"])
+        self.assertEqual(code, publish_branch.EXIT_OK)
+        self.assertEqual(self.git("diff", "--cached", "--name-only").strip(), "")
+
+    def test_dry_run_refuses_pre_staged_path_outside_scope(self):
+        self.write("outside/a.txt", "staged outside scope\n")
+        self.git("add", "outside/a.txt")
+        before = self.snapshot()
+
+        code, _, err = self.run_publish(
+            ["--branch", "feat/dry", "--scope", "products/x", "--message", "m", "--dry-run"]
+        )
+
+        self.assertEqual(code, publish_branch.EXIT_OUTSIDE_SCOPE)
+        self.assertIn("outside/a.txt", err)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_dry_run_with_nothing_to_publish_exits_ok(self):
+        before = self.snapshot()
+        code, out, _ = self.run_publish(["--branch", "feat/dry", "--scope", "products/x", "--message", "m", "--dry-run"])
+        self.assertEqual(code, publish_branch.EXIT_OK)
+        self.assertIn("nothing to publish", out)
+        self.assertEqual(self.snapshot(), before)
+
+
+class PublishOutOfScopeRenameTests(TempRepoCase):
+    def test_staged_rename_out_of_scope_is_refused_with_exit_3(self):
+        # Move a tracked file from outside the scope into it. Rename detection would hide the source.
+        os.makedirs("products/x", exist_ok=True)
+        self.git("mv", "outside/a.txt", "products/x/a.txt")
+        head_before = self.git("rev-parse", "HEAD").strip()
+
+        code, _, err = self.run_publish(["--branch", "feat/rename", "--scope", "products/x", "--message", "m"])
+
+        self.assertEqual(code, publish_branch.EXIT_OUTSIDE_SCOPE)
+        self.assertIn("outside/a.txt", err)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head_before)
+        self.assertEqual(self.git("diff", "--cached", "--name-only").strip(), "")
+
+
+class ReviewAutoMergeGuardTests(unittest.TestCase):
+    def test_base_without_factory_review_does_not_require_status(self):
+        protection = {"required_status_checks": {"contexts": ["test"]}}
+        with mock.patch.object(review_pr, "request", return_value=protection):
+            self.assertFalse(review_pr.base_requires_status("o", "r", "main"))
+
+    def test_base_with_factory_review_requires_status(self):
+        protection = {"required_status_checks": {"contexts": ["test", "factory/review"]}}
+        with mock.patch.object(review_pr, "request", return_value=protection):
+            self.assertTrue(review_pr.base_requires_status("o", "r", "main"))
+
+    def test_http_404_on_protection_read_means_no_protection(self):
+        not_found = GhError("GET /repos/o/r/branches/main/protection failed: HTTP 404 Branch not protected", status=404)
+        with mock.patch.object(review_pr, "request", side_effect=not_found):
+            self.assertFalse(review_pr.base_requires_status("o", "r", "main"))
+
+    def test_other_protection_read_errors_are_not_hidden(self):
+        server_error = GhError("GET /x failed: HTTP 500 boom", status=500)
+        with mock.patch.object(review_pr, "request", side_effect=server_error):
+            with self.assertRaises(GhError):
+                review_pr.base_requires_status("o", "r", "main")
+
+    def test_base_branch_name_with_slash_is_encoded_safely(self):
+        with mock.patch.object(review_pr, "request", return_value={}) as request:
+            review_pr.base_requires_status("o", "r", "release/1.0")
+        self.assertEqual(request.call_args[0][1], "/repos/o/r/branches/release/1.0/protection")
+
+    def test_enable_auto_merge_sends_squash_mutation_for_pr_node_id(self):
+        def fake_graphql(query, variables=None):
+            if query == review_pr.PR_ID_QUERY:
+                self.assertEqual(variables, {"owner": "o", "name": "r", "number": 8})
+                return {"repository": {"pullRequest": {"id": "PR_node_8"}}}
+            self.assertEqual(query, review_pr.AUTO_MERGE_MUTATION)
+            self.assertEqual(variables, {"id": "PR_node_8"})
+            return {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": {"enabledAt": "t"}}}}
+
+        with mock.patch.object(review_pr, "graphql", side_effect=fake_graphql) as graphql:
+            enabled = review_pr.enable_auto_merge("o", "r", 8)
+        self.assertEqual(enabled, {"enabledAt": "t"})
+        self.assertEqual(graphql.call_count, 2)
+        self.assertIn("mergeMethod: SQUASH", review_pr.AUTO_MERGE_MUTATION)
+
+    def test_enable_auto_merge_refuses_missing_pull_request(self):
+        with mock.patch.object(review_pr, "graphql", return_value={"repository": {"pullRequest": None}}):
+            with self.assertRaises(GhError):
+                review_pr.enable_auto_merge("o", "r", 99)
+
+
+PR_OPEN = {
+    "state": "open",
+    "head": {"sha": "abc123"},
+    "base": {"ref": "main"},
+    "html_url": "https://github.com/o/r/pull/8",
+}
+REQUIRES_STATUS = {"required_status_checks": {"contexts": ["factory/review"]}}
+NO_STATUS = {"required_status_checks": {"contexts": ["test"]}}
+
+
+class ReviewExecutionTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.body_path = os.path.join(tmp.name, "review.md")
+        with open(self.body_path, "w", encoding="utf-8") as handle:
+            handle.write("Review body\n")
+
+    def _run(self, decision, protection=None, protection_missing=False, comments=(), pr=PR_OPEN, extra=()):
+        calls = []
+
+        def fake_request(method, path, body=None):
+            calls.append((method, path, body))
+            if method == "GET" and path.endswith("/protection"):
+                if protection_missing:
+                    raise GhError("GET protection failed: HTTP 404 Branch not protected", status=404)
+                return protection
+            if method == "GET" and "/pulls/" in path:
+                return pr
+            return {"id": 1}
+
+        def fake_graphql(query, variables=None):
+            calls.append(("GRAPHQL", query, variables))
+            if query == review_pr.PR_ID_QUERY:
+                return {"repository": {"pullRequest": {"id": "PR_node_8"}}}
+            return {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": {"enabledAt": "t"}}}}
+
+        argv = ["--pr", "8", "--decision", decision, "--body-file", self.body_path, *extra]
+        out = io.StringIO()
+        with mock.patch.object(review_pr, "repo", return_value=("o", "r")), \
+                mock.patch.object(review_pr, "request", side_effect=fake_request), \
+                mock.patch.object(review_pr, "request_all", return_value=list(comments)), \
+                mock.patch.object(review_pr, "graphql", side_effect=fake_graphql), \
+                contextlib.redirect_stdout(out):
+            code = review_pr.main(argv)
+        return code, calls, out.getvalue()
+
+    @staticmethod
+    def _posts(calls):
+        return [(path, body) for method, path, body in calls if method == "POST" and path != "/graphql"]
+
+    @staticmethod
+    def _graphql_calls(calls):
+        return [call for call in calls if call[0] == "GRAPHQL"]
+
+    def test_approve_with_factory_review_protection_sets_status_then_comment_then_automerge(self):
+        code, calls, _ = self._run("approve", protection=REQUIRES_STATUS)
+        self.assertEqual(code, 0)
+        posts = self._posts(calls)
+        self.assertEqual([path for path, _ in posts], ["/repos/o/r/statuses/abc123", "/repos/o/r/issues/8/comments"])
+        status_body = posts[0][1]
+        self.assertEqual(status_body["state"], "success")
+        self.assertEqual(status_body["context"], "factory/review")
+        comment_body = posts[1][1]["body"]
+        self.assertEqual(comment_body.splitlines()[0], "<!-- factory-review:approve -->")
+        graphql = self._graphql_calls(calls)
+        self.assertEqual(len(graphql), 2)
+        self.assertEqual(graphql[1][1], review_pr.AUTO_MERGE_MUTATION)
+        self.assertEqual(graphql[1][2], {"id": "PR_node_8"})
+
+    def test_approve_without_factory_review_protection_does_not_enable_automerge(self):
+        code, calls, out = self._run("approve", protection=NO_STATUS)
+        self.assertEqual(code, 0)
+        self.assertEqual(self._graphql_calls(calls), [])
+        self.assertIn("automerge:skipped-no-protection", out)
+        self.assertEqual(len(self._posts(calls)), 2)
+
+    def test_approve_with_no_protection_404_does_not_enable_automerge(self):
+        code, calls, _ = self._run("approve", protection_missing=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(self._graphql_calls(calls), [])
+        posts = self._posts(calls)
+        self.assertEqual(posts[0][1]["state"], "success")
+        self.assertEqual(posts[1][1]["body"].splitlines()[0], "<!-- factory-review:approve -->")
+
+    def test_escalate_path_after_limit_posts_escalation_and_failure_status(self):
+        prior = [{"body": review_pr.MARKERS["request-changes"] + "\nfix"} for _ in range(3)]
+        code, calls, _ = self._run("request-changes", protection=REQUIRES_STATUS, comments=prior)
+        self.assertEqual(code, 0)
+        posts = self._posts(calls)
+        self.assertEqual(posts[0][0], "/repos/o/r/statuses/abc123")
+        self.assertEqual(posts[0][1]["state"], "failure")
+        self.assertEqual(posts[0][1]["description"], "Rework limit reached; human decision needed")
+        comment_body = posts[1][1]["body"]
+        self.assertEqual(comment_body.splitlines()[0], "<!-- factory-review:escalate -->")
+        self.assertIn("A human must decide", comment_body)
+        self.assertEqual(self._graphql_calls(calls), [])
+
+    def test_request_changes_below_limit_posts_round_status(self):
+        prior = [{"body": review_pr.MARKERS["request-changes"] + "\nfix"}]
+        code, calls, _ = self._run("request-changes", protection=REQUIRES_STATUS, comments=prior)
+        self.assertEqual(code, 0)
+        posts = self._posts(calls)
+        self.assertEqual(posts[0][1]["description"], "Changes requested (round 2 of 3)")
+        self.assertEqual(posts[1][1]["body"].splitlines()[0], "<!-- factory-review:request-changes -->")
+        self.assertEqual(self._graphql_calls(calls), [])
+
+    def test_marker_not_on_first_line_does_not_count_toward_limit(self):
+        prior = [{"body": "Notes first\n" + review_pr.MARKERS["request-changes"]} for _ in range(3)]
+        code, calls, _ = self._run("request-changes", protection=NO_STATUS, comments=prior)
+        self.assertEqual(code, 0)
+        self.assertEqual(self._posts(calls)[1][1]["body"].splitlines()[0], "<!-- factory-review:request-changes -->")
+
+    def test_dry_run_makes_no_writes(self):
+        code, calls, out = self._run("approve", protection=REQUIRES_STATUS, extra=["--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertEqual(self._posts(calls), [])
+        self.assertEqual(self._graphql_calls(calls), [])
+        self.assertIn("dry run: no writes made", out)
+
+    def test_closed_pull_request_is_refused_without_writes(self):
+        closed = dict(PR_OPEN, state="closed")
+        code, calls, _ = self._run("approve", protection=REQUIRES_STATUS, pr=closed)
+        self.assertEqual(code, 2)
+        self.assertEqual(self._posts(calls), [])
 
 
 if __name__ == "__main__":

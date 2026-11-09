@@ -15,7 +15,7 @@ Scope:
 
 Steps:
 1. Read the story, its acceptance criteria, the design doc, and the linked bugs or tests.
-2. Sync first. Run `git fetch origin main:main`, or `git pull --ff-only origin main` if `main` is checked out. Create a branch named `<tracker-key>/<short-slug>` from `origin/main`.
+2. Sync first. Run `git fetch origin main`, then merge `origin/main` into the checked-out branch. Create a branch named `<tracker-key>/<short-slug>` from `origin/main`.
 3. Implement the change in small commits, one concern per commit.
 4. Write unit tests for each module you touch. Write at least one integration test for each cross-module flow.
 5. Run the full test suite and linters locally.

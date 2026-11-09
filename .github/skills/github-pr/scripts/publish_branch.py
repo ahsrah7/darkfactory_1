@@ -4,6 +4,9 @@ Usage: publish_branch.py --branch NAME --scope PATH [--scope PATH ...] --message
 
 Exit codes: 0 published, dry run done, or nothing to publish; 1 git failed;
 2 refused input; 3 staged paths outside the scopes (nothing committed).
+--dry-run changes no git state: it does not switch or create branches, does not
+stage files and does not write the index. It lists what a real run would commit.
+Staged paths are read with --no-renames, so a rename out of scope shows both paths.
 Never pushes with --force or --force-with-lease.
 """
 
@@ -58,22 +61,38 @@ def validate_scopes(scopes):
             problems.append("scope is empty")
         elif _is_absolute(scope):
             problems.append(f"scope must be relative: {scope}")
-        elif ".." in scope:
-            problems.append(f"scope must not contain '..': {scope}")
+        elif _has_parent_segment(scope):
+            problems.append(f"scope must not contain a '..' path segment: {scope}")
         elif _clean_scope(scope) in ("", "."):
             problems.append(f"scope must name a path, not the repository root: {scope}")
     return problems
 
 
+def _has_parent_segment(scope):
+    """True only when a path segment is exactly '..', so 'a..b' is a normal name."""
+    return ".." in _normalize(scope).split("/")
+
+
+def _within(path, cleaned_scopes):
+    normalized = _normalize(path)
+    return any(normalized == scope or normalized.startswith(scope + "/") for scope in cleaned_scopes)
+
+
 def paths_within_scopes(paths, scopes):
     """Return the paths that sit outside every scope. A scope is a directory prefix or an exact file."""
     cleaned = [_clean_scope(scope) for scope in scopes]
-    outside = []
-    for path in paths:
-        normalized = _normalize(path)
-        if not any(normalized == scope or normalized.startswith(scope + "/") for scope in cleaned):
-            outside.append(path)
-    return outside
+    return [path for path in paths if not _within(path, cleaned)]
+
+
+def parse_status(output):
+    """Return (staged, path) pairs from `git status --porcelain -z --no-renames` output."""
+    entries = []
+    for entry in output.split("\0"):
+        if len(entry) < 4:
+            continue
+        index_state = entry[0]
+        entries.append((index_state not in " ?!", entry[3:]))
+    return entries
 
 
 def _git(*args, stdin=None):
@@ -117,6 +136,37 @@ def _ensure_branch(name):
     return None
 
 
+def _refuse_outside_scope(outside):
+    print("refused: staged paths outside the scopes (nothing committed):", file=sys.stderr)
+    for path in outside:
+        print(f"  {path}", file=sys.stderr)
+    return EXIT_OUTSIDE_SCOPE
+
+
+def _dry_run(args, scopes):
+    """Report what a real run would commit. Reads git state only: no branch, staging or index writes."""
+    status = _git(
+        "--no-optional-locks", "status", "--porcelain", "-z", "--no-renames", "--untracked-files=all"
+    )
+    if status.returncode != 0:
+        return _report_failure("reading the working tree status", status)
+    entries = parse_status(status.stdout)
+    staged_outside = paths_within_scopes([path for staged, path in entries if staged], scopes)
+    if staged_outside:
+        return _refuse_outside_scope(staged_outside)
+    would_commit = [path for _, path in entries if not paths_within_scopes([path], scopes)]
+    if not would_commit:
+        print("nothing to publish")
+        return EXIT_OK
+    print(f"dry run: would commit {len(would_commit)} path(s) to {args.branch}:")
+    for path in would_commit:
+        print(f"  {path}")
+    print(f"message: {args.message.strip()}")
+    print(f"trailer: {TRAILER}")
+    print("dry run: no branch, index or file was changed")
+    return EXIT_OK
+
+
 def _summarize_push(output):
     for line in output.splitlines():
         if "->" in line:
@@ -143,16 +193,19 @@ def main(argv=None):
             print(f"refused: {problem}", file=sys.stderr)
         return EXIT_REFUSED
 
+    scopes = [_clean_scope(scope) for scope in args.scope]
+    if args.dry_run:
+        return _dry_run(args, scopes)
+
     failed = _ensure_branch(args.branch)
     if failed is not None:
         return failed
 
-    scopes = [_clean_scope(scope) for scope in args.scope]
     added = _git("add", "--", *scopes)
     if added.returncode != 0:
         return _report_failure("staging the scopes", added)
 
-    listed = _git("diff", "--cached", "--name-only", "-z")
+    listed = _git("diff", "--cached", "--no-renames", "--name-only", "-z")
     if listed.returncode != 0:
         return _report_failure("listing staged paths", listed)
     paths = [path for path in listed.stdout.split("\0") if path]
@@ -163,19 +216,7 @@ def main(argv=None):
     outside = paths_within_scopes(paths, scopes)
     if outside:
         _unstage()
-        print("refused: staged paths outside the scopes (nothing committed):", file=sys.stderr)
-        for path in outside:
-            print(f"  {path}", file=sys.stderr)
-        return EXIT_OUTSIDE_SCOPE
-
-    if args.dry_run:
-        print(f"dry run: would commit {len(paths)} path(s) to {args.branch}:")
-        for path in paths:
-            print(f"  {path}")
-        print(f"message: {args.message.strip()}")
-        print(f"trailer: {TRAILER}")
-        _unstage()
-        return EXIT_OK
+        return _refuse_outside_scope(outside)
 
     message = f"{args.message.strip()}\n\n{TRAILER}\n"
     committed = _git("commit", "-F", "-", stdin=message)

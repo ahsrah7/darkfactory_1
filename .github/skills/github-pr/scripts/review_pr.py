@@ -162,7 +162,7 @@ def _execute(args, body):
         print("dry run: no writes made")
         return 0
 
-    request("POST", f"/repos/{owner}/{name}/issues/{args.pr}/comments", {"body": comment})
+    # The status goes first: if a later call fails, the PR never shows a comment without its status.
     request(
         "POST",
         f"/repos/{owner}/{name}/statuses/{head_sha}",
@@ -173,6 +173,7 @@ def _execute(args, body):
             "target_url": pr["html_url"],
         },
     )
+    request("POST", f"/repos/{owner}/{name}/issues/{args.pr}/comments", {"body": comment})
     if "automerge:enable" in actions:
         enable_auto_merge(owner, name, args.pr)
 

@@ -18,7 +18,7 @@ Rules:
 9. Never move a ticket to Done or merge a pull request yourself. Auto-merge is enabled by the pr-reviewer through review_pr.py only after approval and only when branch protection requires factory/review.
 10. Build every application into `products/<app-name>/` at the repository root. Give each coding agent its exact folder. Agents write no application code outside `products/`. After a coding agent finishes, run that app's build and tests with `execute` and report the result before the ticket moves on.
 11. Jira work uses the skills in [skills](../skills): [jira-api](../skills/jira-api/SKILL.md) (the shared client), [jira-read-status](../skills/jira-read-status/SKILL.md), [jira-status-check](../skills/jira-status-check/SKILL.md), [jira-transition](../skills/jira-transition/SKILL.md), [jira-comment](../skills/jira-comment/SKILL.md) and [jira-create-issue](../skills/jira-create-issue/SKILL.md). Run their Python scripts with `execute`. The scripts call the Jira REST API using the runner's JIRA_* variables.
-12. Keep the local copy current. At the start of each run, run `git fetch origin main:main` (or `git pull --ff-only origin main` when `main` is checked out) and report the commit. Never force push.
+12. Keep the local copy current. At the start of each run, run `git fetch origin main`, then merge `origin/main` into the checked-out branch, and report the commit. Never force push.
 13. PR loop: after a coding agent opens a PR, run pr-reviewer. If it requests changes, run rework on the same branch, then pr-reviewer again. The script escalates after 3 rounds; when it does, stop, report to a human, and do not merge.
 
 Keep each report short: what ran, what changed status, what needs a human.

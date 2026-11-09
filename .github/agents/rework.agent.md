@@ -14,7 +14,7 @@ Steps:
 1. Run `python .github/skills/github-pr/scripts/pr_feedback.py --pr N`. It prints the newest request-changes comment and the inline review comments. Fix every finding in it.
 2. Fix each finding on the same branch. Do not open a new PR.
 3. Run the tests and linters locally.
-4. Keep the branch current. Run `python .github/skills/github-pr/scripts/pr_state.py --pr N`. If `behind_base` is above 0, run `git fetch origin main:main`, merge `origin/main` into the branch, and resolve conflicts without dropping changes from `main`. Never force push and never rebase.
+4. Keep the branch current. Run `python .github/skills/github-pr/scripts/pr_state.py --pr N`. If `behind_base` is above 0, run `git fetch origin main`, merge `origin/main` into the branch, and resolve conflicts without dropping changes from `main`. Never force push and never rebase.
 5. Publish: `python .github/skills/github-pr/scripts/publish_branch.py --branch <branch> --scope <paths> --message "<tracker-key>: address review"`. Use the app folder as `<paths>`, for example `products/<app-name>`.
 6. Move the ticket back to In Review. The orchestrator then re-runs pr-reviewer.
 

@@ -1,0 +1,58 @@
+name: PR gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require branch up to date with main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            echo "::error::Branch is behind main. Merge main and rerun."
+            exit 1
+          fi
+
+      - name: Require factory or human approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          labels=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name')
+          if echo "$labels" | grep -qx 'human-approved'; then
+            exit 0
+          fi
+          if ! echo "$labels" | grep -qx 'factory-approved'; then
+            echo "::error::Missing factory-approved label. Pull request review has not passed."
+            exit 1
+          fi
+          # Keep this pattern in sync with humanGates.protectedPathsRequireApproval in config.json.
+          changed=$(git diff --name-only origin/main...HEAD)
+          if echo "$changed" | grep -Eq '^(auth/|infra/|migrations/|.*/secrets/)'; then
+            echo "::error::Protected path changed. A human must add the human-approved label."
+            exit 1
+          fi
+
+  automerge:
+    if: github.event.action == 'labeled' && github.event.label.name == 'factory-approved'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge "$PR_URL" --auto --squash

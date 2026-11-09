@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect stacks
+        id: detect
+        run: |
+          if [ -f go.mod ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "go=false" >> "$GITHUB_OUTPUT"; fi
+          if [ -f package.json ]; then echo "node=true" >> "$GITHUB_OUTPUT"; else echo "node=false" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: actions/setup-go@v5
+        if: steps.detect.outputs.go == 'true'
+        with:
+          go-version-file: go.mod
+
+      - name: Go vet and test
+        if: steps.detect.outputs.go == 'true'
+        run: |
+          go vet ./...
+          go test ./...
+
+      - uses: actions/setup-node@v4
+        if: steps.detect.outputs.node == 'true'
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Node install and test
+        if: steps.detect.outputs.node == 'true'
+        run: |
+          npm ci
+          npm test --if-present
+
+      - name: No stack found
+        if: steps.detect.outputs.go == 'false' && steps.detect.outputs.node == 'false'
+        run: echo "::notice::No go.mod or package.json found. Nothing to test."

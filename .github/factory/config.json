@@ -1,0 +1,49 @@
+{
+  "factory": {
+    "enabled": true,
+    "pollIntervalMinutes": 15,
+    "maxParallelAgents": 5,
+    "maxReworkIterations": 3,
+    "maxTestBugLoops": 3
+  },
+  "agents": {
+    "intake": { "enabled": true, "tier": "tier2" },
+    "product-owner": { "enabled": true, "tier": "tier2" },
+    "business-analyst": { "enabled": true, "tier": "tier2" },
+    "architect": { "enabled": true, "tier": "tier1" },
+    "software-developer": { "enabled": true, "tier": "tier2" },
+    "senior-software-engineer": { "enabled": true, "tier": "tier1" },
+    "principal-software-engineer": { "enabled": true, "tier": "tier1" },
+    "pr-reviewer": { "enabled": true, "tier": "tier1" },
+    "rework": { "enabled": true, "tier": "tier2" },
+    "test-case-generator": { "enabled": true, "tier": "tier2" },
+    "test-automator": { "enabled": true, "tier": "tier2" },
+    "test-reviewer": { "enabled": true, "tier": "tier1" },
+    "bug-reporter": { "enabled": true, "tier": "tier2" },
+    "bug-fixer": { "enabled": true, "tier": "tier2" },
+    "security-screen": { "enabled": true, "tier": "tier1" }
+  },
+  "tiers": {
+    "tier1": "Strongest model the team has access to; used for design, review and security",
+    "tier2": "Default model for building, fixing and writing",
+    "tier3": "Cheap model; only for testing loops and tuning instructions, never production work"
+  },
+  "budget": {
+    "creditBalanceUsd": 19,
+    "allocationPercent": 70,
+    "onLimit": "block_and_notify"
+  },
+  "levels": {
+    "default": "software-developer",
+    "labels": {
+      "level:senior": "senior-software-engineer",
+      "level:principal": "principal-software-engineer"
+    }
+  },
+  "copilotAgents": ["software-developer", "senior-software-engineer", "principal-software-engineer", "bug-fixer", "test-automator"],
+  "humanGates": {
+    "beforeMerge": false,
+    "beforeProductionDeploy": true,
+    "protectedPathsRequireApproval": ["auth/**", "infra/**", "migrations/**", "**/secrets/**"]
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "rules": {
+    "evidence": "Every transition writes a tracker comment linking the artifact (PR, test, design doc).",
+    "blocked": "An agent that lacks permission or access sets Blocked and assigns a human. The human moves the ticket back to its previous status.",
+    "reworkLimit": "After config.factory.maxReworkIterations failed reviews, move to Blocked."
+  },
+  "transitions": [
+    { "from": "Intake", "agent": "intake", "onSuccess": "Story Refinement", "onBlocked": "Blocked" },
+    { "from": "Story Refinement", "agent": "business-analyst", "mode": "refine", "onQuestions": "Questions Open", "onSuccess": "Acceptance Criteria", "onBlocked": "Blocked" },
+    { "from": "Questions Open", "agent": "product-owner", "onSuccess": "Story Refinement", "onBlocked": "Blocked" },
+    { "from": "Acceptance Criteria", "agent": "business-analyst", "mode": "write", "onSuccess": "Design", "onBlocked": "Blocked" },
+    { "from": "Design", "agent": "architect", "onSuccess": "Ready for Dev", "onBlocked": "Blocked" },
+    { "from": "Ready for Dev", "agent": "routed", "onSuccess": "In Review", "onBlocked": "Blocked", "note": "agent comes from the level label; default software-developer" },
+    { "from": "In Review", "agent": "pr-reviewer", "onApproved": "Approved", "onRejected": "Rework", "onBlocked": "Blocked" },
+    { "from": "Rework", "agent": "rework", "onSuccess": "In Review", "onExceededLimit": "Escalate" },
+    { "from": "Escalate", "system": "tracker", "onSuccess": "Ready for Dev", "onExceededLimit": "Blocked", "note": "move the level label one step up (default -> level:senior -> level:principal); at principal, Blocked" },
+    { "from": "Approved", "system": "pr-gate", "onSuccess": "Ready for Testing", "onBlocked": "Blocked" },
+    { "from": "Ready for Testing", "agent": "test-case-generator", "onSuccess": "Test Cases Ready", "onBlocked": "Blocked" },
+    { "from": "Test Cases Ready", "agent": "test-automator", "onSuccess": "Automation In Review", "onBlocked": "Blocked" },
+    { "from": "Automation In Review", "agent": "test-reviewer", "onApproved": "Test Run", "onRejected": "Test Cases Ready", "onBlocked": "Blocked" },
+    { "from": "Test Run", "system": "test-runner", "onPass": "Test Passed", "onFail": "Bug Open" },
+    { "from": "Test Passed", "system": "tracker", "condition": "all linked tests passed", "onSuccess": "Done" },
+    { "from": "Bug Open", "agent": "bug-reporter", "onSuccess": "Bug Ready", "onBlocked": "Blocked" },
+    { "from": "Bug Ready", "agent": "bug-fixer", "onSuccess": "Bug In Review", "onBlocked": "Blocked" },
+    { "from": "Bug In Review", "agent": "pr-reviewer", "onApproved": "Bug Approved", "onRejected": "Bug Rework", "onBlocked": "Blocked" },
+    { "from": "Bug Rework", "agent": "bug-fixer", "onSuccess": "Bug In Review", "onExceededLimit": "Blocked" },
+    { "from": "Bug Approved", "system": "pr-gate", "onSuccess": "Bug Verified", "onBlocked": "Blocked" },
+    { "from": "Bug Verified", "system": "tracker", "onSuccess": "Test Run", "note": "Linked tests move back to rerun" },
+    { "from": "Blocked", "system": "human", "onSuccess": "previous status", "note": "Only a human moves tickets out of Blocked" }
+  ]
+}

@@ -11,11 +11,11 @@ Tracker skills. Run scripts from the repo root with `execute`. They call the Jir
 - [jira-transition](../skills/jira-transition/SKILL.md): move the ticket with `scripts/apply_transition.py KEY OUTCOME`, after `scripts/next_transition.py` gives the target. Exit 2 or 3 means set Blocked or stop; exit 4 means set Blocked.
 
 Steps:
-1. Read every open review comment on the pull request.
-2. Fix each finding in the same branch. Do not open a new PR.
+1. Run `python .github/skills/github-pr/scripts/pr_feedback.py --pr N`. It prints the newest request-changes comment and the inline review comments. Fix every finding in it.
+2. Fix each finding on the same branch. Do not open a new PR.
 3. Run the tests and linters locally.
-4. Reply to each comment with what you changed, then resolve the conversation.
-5. Sync: run `git fetch origin main:main`, then merge `origin/main` into the branch if it is behind. Resolve conflicts. Do not drop changes from `main`. Push the branch (never force push) so the PR is current. The pr-gate rejects a branch that is behind main.
-6. Move the ticket back to In Review.
+4. Keep the branch current. Run `python .github/skills/github-pr/scripts/pr_state.py --pr N`. If `behind_base` is above 0, run `git fetch origin main:main`, merge `origin/main` into the branch, and resolve conflicts without dropping changes from `main`. Never force push and never rebase.
+5. Publish: `python .github/skills/github-pr/scripts/publish_branch.py --branch <branch> --scope <paths> --message "<tracker-key>: address review"`. Use the app folder as `<paths>`, for example `products/<app-name>`.
+6. Move the ticket back to In Review. The orchestrator then re-runs pr-reviewer.
 
-Check the rework count in the tracker comments. If it has reached `maxReworkIterations` in [config.json](../factory/config.json), set Blocked and assign a human.
+Rework limit: `pr_state.py` reports `rework_rounds`. `review_pr.py` allows 3 request-changes rounds (`--max-rework`, default 3). At the limit it escalates instead: it posts an escalation comment, sets the status to failure and does not auto-merge. If that happens, stop, set Blocked and assign a human.

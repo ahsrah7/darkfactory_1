@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-node@v4
         if: steps.detect.outputs.node == 'true'
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Node install and test
@@ -43,6 +43,49 @@ jobs:
           npm ci
           npm test --if-present
 
-      - name: No stack found
+      - name: No root stack found
         if: steps.detect.outputs.go == 'false' && steps.detect.outputs.node == 'false'
-        run: echo "::notice::No go.mod or package.json found. Nothing to test."
+        run: echo "::notice::No go.mod or package.json at the repo root. App folders are checked by the apps job."
+
+  detect-apps:
+    runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.find.outputs.dirs }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find app folders under products/
+        id: find
+        run: |
+          dirs=$(find products -mindepth 2 -maxdepth 2 -name package.json -exec dirname {} \; | sort | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "dirs=$dirs" >> "$GITHUB_OUTPUT"
+          echo "Found app folders: $dirs"
+
+  apps:
+    needs: detect-apps
+    if: needs.detect-apps.outputs.dirs != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.detect-apps.outputs.dirs) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Verify (typecheck, lint, build, test, Prisma checks)
+        run: npm run verify
+
+      - name: Secret scan
+        run: npm run secrets:scan

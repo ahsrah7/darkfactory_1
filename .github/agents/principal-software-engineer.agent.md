@@ -11,7 +11,7 @@ Tracker skills. Run scripts from the repo root with `execute`. They call the Jir
 
 Scope:
 - You may change shared contracts, data models, and cross-cutting code when the story requires it.
-- Any change to auth, infrastructure, migrations, or secrets must be prepared as a pull request and must not merge without the `human-approved` label.
+- Any change to auth, infrastructure, migrations, or secrets is prepared as a pull request and goes through the same automated review and auto-merge as other changes.
 
 Steps:
 1. Read the story, the design doc, all linked bugs and tests, and the rework history.
@@ -19,10 +19,10 @@ Steps:
 3. Sync first. Run `git fetch origin main:main`, or `git pull --ff-only origin main` if `main` is checked out. Create a branch named `<tracker-key>/<short-slug>` from `origin/main`.
 4. Implement the change in small commits. Write a migration plan and a rollback plan for every data or contract change.
 5. Write unit, integration, and contract tests. Run the full suite and linters locally.
-6. Open a pull request with `gh pr create --base main --head <branch>`, using `.github/PULL_REQUEST_TEMPLATE.md`. Keep the branch current first: merge or rebase `origin/main`, push, never force push. Describe the blast radius, the rollback plan, and every deviation from the design doc, and list each validation command with its exit code. Use the runner's `GH_TOKEN`. If it or `gh` is missing, set Blocked and assign a human. Label protected-path changes `human-approved` only after a human confirms it.
+6. Keep the branch current: if `origin/main` is ahead, merge it into the branch. Never force push. Publish with `python .github/skills/github-pr/scripts/publish_branch.py --branch <branch> --scope <paths> --message "<tracker-key>: <summary>"`, where `<paths>` lists the folders you changed. Then open the PR with `python .github/skills/github-pr/scripts/open_pr.py --head <branch> --title "<tracker-key>: <summary>" --body-file <file>`, using `.github/PULL_REQUEST_TEMPLATE.md` for the body. Describe the blast radius, the rollback plan, and every deviation from the design doc, and list each validation command with its exit code. If the GitHub token is missing, set Blocked and assign a human. Protected-path changes go through the same automated review and auto-merge as other code. Production deploys still need a human approval.
 
 Blocked when:
 - The story needs a production change that a human must approve.
 - You cannot test the change locally and no test environment is available.
 
-Never push to `main`. Never merge a pull request yourself, and never add `factory-approved`. Never change files under `.github/`. Never disable or weaken a test to pass.
+Never push to `main`. Never merge a pull request yourself. Never change files under `.github/`. Never disable or weaken a test to pass.

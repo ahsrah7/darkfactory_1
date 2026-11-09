@@ -31,7 +31,16 @@ server.on("error", (error: NodeJS.ErrnoException) => {
 // process is forced to exit.
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
+// Set on the first SIGTERM or SIGINT. A repeated signal must not start a second
+// shutdown: it would add another timer and call server.close() again.
+let shuttingDown = false;
+
 function shutdown(signal: string): void {
+  if (shuttingDown) {
+    console.log(`Received ${signal} during shutdown, ignoring`);
+    return;
+  }
+  shuttingDown = true;
   console.log(`Received ${signal}, shutting down`);
   setTimeout(() => {
     server.closeAllConnections?.();
